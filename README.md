@@ -11,7 +11,7 @@
 ### 环境要求
 
 - Python >= 3.12, < 3.13（PySide6 与 3.13 存在 ABI 兼容性问题）
-- OAK 相机（三目 + IMU）
+- Ego 数采相机（三目 + IMU）
 
 ### 安装与启动
 
@@ -46,6 +46,7 @@ python -m DaO.main
 
 **方式三：一键启动**
 
+使用release中的包或在配置好上述环境的情况下
 ```bash
 # Windows
 run.bat
@@ -96,7 +97,7 @@ EgoDaO/
 │   ├── main.py
 │   ├── config/config.py        # 相机 / IMU / 录制参数
 │   ├── core/
-│   │   ├── pipeline.py         # DepthAI v3 pipeline 工厂
+│   │   ├── pipeline.py         # DepthAI Capture pipeline
 │   │   ├── capture_worker.py   # 后台采集线程（threading.Thread）
 │   │   ├── recorder.py         # 原始数据录制
 │   │   ├── humanego_recorder.py  # HumanEgo 兼容格式录制
