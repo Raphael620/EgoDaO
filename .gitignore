@@ -1,0 +1,36 @@
+# Byte-compiled
+__pycache__/
+*.py[cod]
+
+# personal
+todo.md
+
+# Virtual environment
+.venv/
+venv/
+
+# uv
+.python-version
+uv.lock
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Data output
+Data/
+
+# External SDKs & submodules (not part of this project)
+depthai-core/
+HumanEgo/
+depthai_hand_tracker/
+
+# Test / development artifacts
+test/
+*.blob
