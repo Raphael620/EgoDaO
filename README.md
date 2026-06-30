@@ -4,6 +4,8 @@
 
 [English](#english) | 中文
 
+![软件截图](sample.png)
+
 ---
 
 ## 中文
