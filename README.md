@@ -46,9 +46,18 @@ pip install depthai numpy opencv-python pyside6 mediapipe
 python -m DaO.main
 ```
 
-**方式三：一键启动**
+**方式三：一键启动（使用预置 .venv）**
 
-使用release中的包或在配置好上述环境的情况下
+如果你从 release 获取了包含 `.venv` 的压缩包，需先修正 Python 路径：
+
+1. 打开 `.venv\pyvenv.cfg`（Linux: `.venv/pyvenv.cfg`）
+2. 将 `home` 修改为你本机 Python 3.12 的安装路径，例如：
+   ```
+   home = C:\Users\你的用户名\AppData\Roaming\uv\python\cpython-3.12-windows-x86_64-none
+   ```
+   (测试环境为 Python 3.12.13，使用 `uv python pin 3.12` 可获取此路径)
+
+然后：
 ```bash
 # Windows
 run.bat
