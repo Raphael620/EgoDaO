@@ -89,6 +89,8 @@ class HumanEgoRecorder:
         self._hand_data_right: list[list] = []
         self._rgb_frames: list[np.ndarray] = []
         self._K: np.ndarray | None = None
+        self._latest_vio: np.ndarray | None = None
+        self._latest_hands: list | None = None
 
     @property
     def is_recording(self) -> bool:
@@ -113,6 +115,8 @@ class HumanEgoRecorder:
         self._hand_data_left = []
         self._hand_data_right = []
         self._rgb_frames = []
+        self._latest_vio = None
+        self._latest_hands = None
         return self._session_dir
 
     def stop(self):
@@ -137,6 +141,8 @@ class HumanEgoRecorder:
         self._hand_data_left = []
         self._hand_data_right = []
         self._rgb_frames = []
+        self._latest_vio = None
+        self._latest_hands = None
 
         t = threading.Thread(
             target=_flush_worker,
@@ -156,19 +162,29 @@ class HumanEgoRecorder:
             return
         self._rgb_frames.append(bgr.copy())
         self._timestamps_us.append(timestamp_us)
+        # Align VIO and hands data with this RGB frame
+        if self._latest_vio is not None:
+            self._vio_frames.append(self._latest_vio.copy())
+        else:
+            self._vio_frames.append(np.eye(4, dtype=np.float64))
+        if self._latest_hands is not None:
+            hands_l = [h for h in self._latest_hands if h[0].lower().startswith("l")]
+            hands_r = [h for h in self._latest_hands if h[0].lower().startswith("r")]
+            self._hand_data_left.append(hands_l if hands_l else [])
+            self._hand_data_right.append(hands_r if hands_r else [])
+        else:
+            self._hand_data_left.append([])
+            self._hand_data_right.append([])
         self._frame_idx += 1
 
     def write_vio(self, transform: np.ndarray):
         if self._active:
-            self._vio_frames.append(np.asarray(transform, dtype=np.float64))
+            self._latest_vio = np.asarray(transform, dtype=np.float64)
 
     def write_hands(self, role: str, hands: list):
         if not self._active:
             return
-        if role == "left":
-            self._hand_data_left.append(hands)
-        elif role == "right":
-            self._hand_data_right.append(hands)
+        self._latest_hands = hands
 
     # ── helpers ────────────────────────────────────────────────────
 
@@ -247,9 +263,10 @@ def _write_hands_json(frame_dir, idx, hand_data_left, hand_data_right, timestamp
             }
         return None
 
+    n_ts = len(timestamps_us)
     data = {
         "idx": idx,
-        "ts": int(timestamps_us[idx] * 1000) if idx < len(timestamps_us) else 0,
+        "ts": int(timestamps_us[idx] * 1000) if idx < n_ts and timestamps_us[idx] > 0 else 0,
         "hand_l": _pack(hand_data_left[idx] if idx < len(hand_data_left) else []),
         "hand_r": _pack(hand_data_right[idx] if idx < len(hand_data_right) else []),
     }
@@ -294,15 +311,17 @@ def _compute_slam_frames(transforms, timestamps_us):
     delta_t = t_world - t_world[0]
     delta_rpy = rpy_deg - rpy_deg[0]
     yaws = np.unwrap(np.radians(rpy_deg[:, 2]))
+    n_ts = len(timestamps_us)
     frames = []
     for i in range(n):
-        ts_ns = int(timestamps_us[i] * 1000) if i < len(timestamps_us) else 0
-        if i > 0:
-            dt = max((timestamps_us[i] - timestamps_us[i - 1]) / 1e6, 1e-6)
-            v = float(np.linalg.norm(t_world[i] - t_world[i - 1]) / dt)
-            w = float(abs(yaws[i] - yaws[i - 1]) / dt)
+        ts_ns = int(timestamps_us[i] * 1000) if i < n_ts else 0
+        if i > 0 and i < n_ts and (i - 1) < n_ts:
+            dt_us = max(timestamps_us[i] - timestamps_us[i - 1], 1)
+            dt = dt_us / 1e6
         else:
-            v, w = 0.0, 0.0
+            dt = 1.0 / 30.0  # fallback: assume 30 FPS
+        v = float(np.linalg.norm(t_world[i] - t_world[i - 1]) / max(dt, 1e-6)) if i > 0 else 0.0
+        w = float(abs(yaws[i] - yaws[i - 1]) / max(dt, 1e-6)) if i > 0 else 0.0
         frames.append({
             "idx": i, "ts": ts_ns,
             "t_world": t_world[i].tolist(),

@@ -12,7 +12,7 @@ class CaptureWorker(QObject):
     All ``Signal.emit()`` calls are cross-thread — Qt auto-dispatches
     them to the main-thread event loop.
     """
-    frame_ready = Signal(str, np.ndarray)
+    frame_ready = Signal(str, np.ndarray, int)
     hands_ready = Signal(str, list)
     imu_ready = Signal(list)
     vio_ready = Signal(np.ndarray)
@@ -30,7 +30,7 @@ class CaptureWorker(QObject):
         self._thread: threading.Thread | None = None
         self._device = None
         self._hand_tracker = None
-        self._hand_skip_counter = {"left": 0, "right": 0}
+        self._hand_skip_counter = {"center": 0}
 
     def start(self):
         if self._thread and self._thread.is_alive():
@@ -102,19 +102,28 @@ class CaptureWorker(QObject):
                     if bgr is None or bgr.size == 0:
                         continue
 
-                    self.frame_ready.emit(role, bgr)
+                    # Extract timestamp in microseconds
+                    ts_us = 0
+                    try:
+                        ts = pkt.getTimestamp()
+                        if ts is not None:
+                            ts_us = int(ts.total_seconds() * 1e6)
+                    except Exception:
+                        pass
+
+                    self.frame_ready.emit(role, bgr, ts_us)
                     any_data = True
 
-                    if self._hand_tracker is not None and role in ("left", "right"):
-                        cnt = self._hand_skip_counter[role] + 1
+                    if self._hand_tracker is not None and role == "center":
+                        cnt = self._hand_skip_counter["center"] + 1
                         if cnt >= self._HAND_INTERVAL:
-                            self._hand_skip_counter[role] = 0
+                            self._hand_skip_counter["center"] = 0
                             try:
                                 self.hands_ready.emit(role, self._hand_tracker.process(bgr))
                             except Exception as ex:
                                 sys.stderr.write(f"HT {role}: {ex}\n")
                         else:
-                            self._hand_skip_counter[role] = cnt
+                            self._hand_skip_counter["center"] = cnt
 
                 if imu_q is not None:
                     try:
@@ -148,7 +157,7 @@ class CaptureWorker(QObject):
                     fps_fc, fps_t0 = 0, time.perf_counter()
 
                 if not any_data:
-                    time.sleep(0.001)
+                    time.sleep(0.005)
 
         except Exception as e:
             self.pipeline_error.emit(f"Error: {e}\n{traceback.format_exc()}")

@@ -195,19 +195,22 @@ class MainWindow(QMainWindow):
 
     # ── signal handlers ────────────────────────────────────────────
 
-    @Slot(str, np.ndarray)
-    def _on_frame(self, role: str, bgr: np.ndarray):
+    @Slot(str, np.ndarray, int)
+    def _on_frame(self, role: str, bgr: np.ndarray, ts_us: int = 0):
         self._camera_view.set_frame(role, bgr)
         self._frame_count += 1
         if self._recorder and self._recorder.is_recording:
             self._recorder.write_frame(role, bgr)
         if self._he_recorder and self._he_recorder.is_recording and role == "center":
-            self._he_recorder.write_frame_rgb(bgr)
+            self._he_recorder.write_frame_rgb(bgr, ts_us)
 
     @Slot(str, list)
     def _on_hands(self, role: str, hands: list):
         self._camera_view.set_hands(role, hands)
-        self._hand_counts[role] = len(hands)
+        lh = sum(1 for label, _ in hands if label.lower().startswith("l"))
+        rh = sum(1 for label, _ in hands if label.lower().startswith("r"))
+        self._hand_counts["left"] = lh
+        self._hand_counts["right"] = rh
         if self._recorder and self._recorder.is_recording:
             hands_dict = {}
             for label, lms in hands:

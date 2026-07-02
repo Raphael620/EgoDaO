@@ -115,7 +115,7 @@ class DataRecorder:
     def write_hands(self, hands_data: dict):
         if self._active:
             self._hands_frames.append({
-                "frame_idx": self._frame_counters.get("left", 0),
+                "frame_idx": self._frame_counters.get("center", 0),
                 **hands_data,
             })
 

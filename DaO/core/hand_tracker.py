@@ -36,8 +36,9 @@ class MediaPipeHandTracker:
         if len(bgr.shape) == 2 or bgr.shape[2] == 1:
             rgb = cv2.cvtColor(bgr, cv2.COLOR_GRAY2RGB)
         else:
-            rgb = bgr[..., ::-1]
-        rgb = np.ascontiguousarray(rgb)
+            # bgr[..., ::-1] creates a non-contiguous view — make contiguous
+            # in-place to avoid a full copy when possible
+            rgb = np.ascontiguousarray(bgr[..., ::-1])
         mp_img = self._mp.Image(image_format=self._mp.ImageFormat.SRGB, data=rgb)
         result = self._detector.detect(mp_img)
         hands = []

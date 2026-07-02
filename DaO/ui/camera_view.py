@@ -1,7 +1,6 @@
 """Three-camera view widget — side-by-side display with hand skeleton overlay on left/right."""
 from __future__ import annotations
 
-import cv2
 import numpy as np
 from PySide6.QtCore import Qt, QTimer
 from PySide6.QtGui import QColor, QFont, QImage, QPainter, QPen, QPixmap
@@ -58,6 +57,13 @@ class CameraPane(QFrame):
         self._bgr: np.ndarray | None = None
         self._hands: list[tuple[str, np.ndarray]] = []
 
+        # Cached scale factor — recomputed only on resize
+        self._scale = 1.0
+        self._dw = 0
+        self._dh = 0
+        self._last_lbl_w = 0
+        self._last_lbl_h = 0
+
         # Coalescing timer — throttles repaints to 30 FPS max
         self._dirty = False
         self._render_timer = QTimer(self)
@@ -88,27 +94,46 @@ class CameraPane(QFrame):
         if self._bgr is None:
             return
 
-        h, w = self._bgr.shape[:2]
+        bgr = self._bgr
+        h, w = bgr.shape[:2]
         lbl_w = self._image_label.width()
         lbl_h = self._image_label.height()
         if lbl_w < 2 or lbl_h < 2:
             return
 
-        scale = min(lbl_w / w, lbl_h / h)
-        dw, dh = int(w * scale), int(h * scale)
+        # Recompute scale only when label size changes (e.g. window resize)
+        if lbl_w != self._last_lbl_w or lbl_h != self._last_lbl_h:
+            self._last_lbl_w = lbl_w
+            self._last_lbl_h = lbl_h
+            self._scale = min(lbl_w / w, lbl_h / h)
+            self._dw = int(w * self._scale)
+            self._dh = int(h * self._scale)
+        scale = self._scale
+        dw, dh = self._dw, self._dh
         if dw < 1 or dh < 1:
             return
 
-        # Normalise to 3-channel BGR (left/right may be mono), then → RGB → QPixmap
-        disp = self._bgr
-        if len(disp.shape) == 2:
-            disp = cv2.cvtColor(disp, cv2.COLOR_GRAY2BGR)
-        elif disp.shape[2] == 1:
-            disp = cv2.cvtColor(disp, cv2.COLOR_GRAY2BGR)
-        rgb = cv2.cvtColor(disp, cv2.COLOR_BGR2RGB)
-        qimg = QImage(rgb.data, w, h, rgb.strides[0], QImage.Format.Format_RGB888)
-        pix = QPixmap.fromImage(qimg).scaled(
-            dw, dh, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation
+        # Build QImage directly without colour conversion
+        ndim = bgr.ndim if hasattr(bgr, "ndim") else len(bgr.shape)
+        if ndim == 3 and bgr.shape[2] == 3:
+            # BGR 3-channel (center camera) — use Format_BGR888 directly
+            if not bgr.flags["C_CONTIGUOUS"]:
+                bgr = np.ascontiguousarray(bgr)
+            qimg = QImage(bgr.data, w, h, bgr.strides[0], QImage.Format.Format_BGR888)
+        else:
+            # Mono (left/right cameras) — use Grayscale8
+            if ndim == 3:
+                gray = bgr[:, :, 0]
+            else:
+                gray = bgr
+            if not gray.flags["C_CONTIGUOUS"]:
+                gray = np.ascontiguousarray(gray)
+            qimg = QImage(gray.data, w, h, gray.strides[0], QImage.Format.Format_Grayscale8)
+
+        # Scale QImage first, then convert to QPixmap (cheaper than pixmap scaling)
+        pix = QPixmap.fromImage(
+            qimg.scaled(dw, dh, Qt.AspectRatioMode.KeepAspectRatio,
+                       Qt.TransformationMode.SmoothTransformation)
         )
 
         # Draw hand skeletons
