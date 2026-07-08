@@ -12,8 +12,9 @@ class CaptureWorker(QObject):
     All ``Signal.emit()`` calls are cross-thread — Qt auto-dispatches
     them to the main-thread event loop.
     """
-    frame_ready = Signal(str, np.ndarray, int)
+    frame_ready = Signal(str, np.ndarray)
     hands_ready = Signal(str, list)
+    hands_humanego_ready = Signal(str, list)
     imu_ready = Signal(list)
     vio_ready = Signal(np.ndarray)
     pipeline_stats = Signal(dict)
@@ -76,7 +77,9 @@ class CaptureWorker(QObject):
         if self._cfg.enable_hand_tracking:
             try:
                 from DaO.core.hand_tracker import create_hand_tracker
-                self._hand_tracker = create_hand_tracker("mediapipe")
+                # Extract camera intrinsics for 3D metric recovery
+                K = _get_center_camera_intrinsics(self._device)
+                self._hand_tracker = create_hand_tracker("mediapipe", K=K)
             except Exception as e:
                 sys.stderr.write(f"HT init failed: {e}\n")
                 self._hand_tracker = None
@@ -102,16 +105,7 @@ class CaptureWorker(QObject):
                     if bgr is None or bgr.size == 0:
                         continue
 
-                    # Extract timestamp in microseconds
-                    ts_us = 0
-                    try:
-                        ts = pkt.getTimestamp()
-                        if ts is not None:
-                            ts_us = int(ts.total_seconds() * 1e6)
-                    except Exception:
-                        pass
-
-                    self.frame_ready.emit(role, bgr, ts_us)
+                    self.frame_ready.emit(role, bgr)
                     any_data = True
 
                     if self._hand_tracker is not None and role == "center":
@@ -119,7 +113,11 @@ class CaptureWorker(QObject):
                         if cnt >= self._HAND_INTERVAL:
                             self._hand_skip_counter["center"] = 0
                             try:
-                                self.hands_ready.emit(role, self._hand_tracker.process(bgr))
+                                pixel_hands, he_hands = self._hand_tracker.process(
+                                    bgr, apply_filter=True, compute_metric_3d=True)
+                                self.hands_ready.emit(role, pixel_hands)
+                                if he_hands:
+                                    self.hands_humanego_ready.emit(role, he_hands)
                             except Exception as ex:
                                 sys.stderr.write(f"HT {role}: {ex}\n")
                         else:
@@ -180,6 +178,18 @@ def _decode_imu(packets):
             "t_us": int(a.getTimestamp().total_seconds() * 1e6),
         })
     return result
+
+
+def _get_center_camera_intrinsics(device) -> np.ndarray:
+    """Extract intrinsics for the center (RGB) camera from OAK calibration."""
+    try:
+        import depthai as dai
+        calib = device.readCalibration()
+        w, h = device.getOutputSize(dai.CameraBoardSocket.CAM_A)
+        intr = calib.getCameraIntrinsics(dai.CameraBoardSocket.CAM_A, w, h)
+        return np.array(intr, dtype=np.float64).reshape(3, 3)
+    except Exception:
+        return None
 
 
 def _transform(tf):

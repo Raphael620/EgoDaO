@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import numpy as np
-from PySide6.QtCore import Qt, QTimer
+from PySide6.QtCore import Qt
 from PySide6.QtGui import QColor, QFont, QImage, QPainter, QPen, QPixmap
 from PySide6.QtWidgets import QFrame, QHBoxLayout, QLabel, QVBoxLayout, QWidget
 
@@ -28,8 +28,9 @@ _COLOR_KEYPOINT_RIGHT = QColor(255, 150, 80)
 class CameraPane(QFrame):
     """A single camera feed pane with hand skeleton overlay.
 
-    Rendering is deferred: set_frame/set_hands mark the pane dirty, and
-    _do_render is called at most once per 33 ms (30 FPS) via a coalescing timer.
+    Rendering is event-driven: set_frame() triggers an immediate render.
+    The camera pipeline is already capped at 30 FPS by hardware, so no
+    additional throttling is needed.
     """
 
     def __init__(self, role: str, parent=None):
@@ -64,33 +65,18 @@ class CameraPane(QFrame):
         self._last_lbl_w = 0
         self._last_lbl_h = 0
 
-        # Coalescing timer — throttles repaints to 30 FPS max
-        self._dirty = False
-        self._render_timer = QTimer(self)
-        self._render_timer.setTimerType(Qt.TimerType.CoarseTimer)
-        self._render_timer.setSingleShot(True)
-        self._render_timer.timeout.connect(self._do_render)
-
     def set_frame(self, bgr: np.ndarray | None):
         self._bgr = bgr
-        self._dirty = True
-        self._render_timer.start(33)  # throttle at ~30 fps
+        self._do_render()
 
     def set_hands(self, hands: list[tuple[str, np.ndarray]]):
         """Set hand landmarks. Expects pixel-coordinate landmarks (21, 2) or (21, 3).
 
-        Calling with an empty list immediately clears the skeleton overlay.
-        Otherwise the draw happens on the next frame render.
+        The skeleton is drawn on the next call to set_frame().
         """
-        if not hands and self._hands:
-            self._hands = []
-            self._dirty = True
-            self._render_timer.start(0)  # Immediate render (next event-loop tick)
-            return
         self._hands = hands
 
     def _do_render(self):
-        self._dirty = False
         if self._bgr is None:
             return
 

@@ -62,7 +62,9 @@ def _flush_worker(session_dir: Path, payload: dict[str, Any],
                         payload["timestamps_us"], w, h, cfg_cam.fps)
         _write_slam_json(frame_dir, i, slam_frames)
         _write_hands_json(frame_dir, i, payload["hand_data_left"],
-                          payload["hand_data_right"], payload["timestamps_us"])
+                          payload["hand_data_right"],
+                          payload["hand_data_humanego"],
+                          payload["timestamps_us"])
         _write_training_data_json(frame_dir, i, K, fov, payload["vio_frames"],
                                   payload["timestamps_us"], w, h, cfg_cam.fps)
 
@@ -87,10 +89,12 @@ class HumanEgoRecorder:
         self._timestamps_us: list[int] = []
         self._hand_data_left: list[list] = []
         self._hand_data_right: list[list] = []
+        self._hand_data_humanego: list[list[dict]] = []
         self._rgb_frames: list[np.ndarray] = []
         self._K: np.ndarray | None = None
         self._latest_vio: np.ndarray | None = None
         self._latest_hands: list | None = None
+        self._latest_hands_he: list[dict] | None = None
 
     @property
     def is_recording(self) -> bool:
@@ -114,9 +118,11 @@ class HumanEgoRecorder:
         self._timestamps_us = []
         self._hand_data_left = []
         self._hand_data_right = []
+        self._hand_data_humanego = []
         self._rgb_frames = []
         self._latest_vio = None
         self._latest_hands = None
+        self._latest_hands_he = None
         return self._session_dir
 
     def stop(self):
@@ -134,15 +140,18 @@ class HumanEgoRecorder:
             "timestamps_us": self._timestamps_us,
             "hand_data_left": self._hand_data_left,
             "hand_data_right": self._hand_data_right,
+            "hand_data_humanego": self._hand_data_humanego,
             "rgb_frames": self._rgb_frames,
         }
         self._vio_frames = []
         self._timestamps_us = []
         self._hand_data_left = []
         self._hand_data_right = []
+        self._hand_data_humanego = []
         self._rgb_frames = []
         self._latest_vio = None
         self._latest_hands = None
+        self._latest_hands_he = None
 
         t = threading.Thread(
             target=_flush_worker,
@@ -175,6 +184,11 @@ class HumanEgoRecorder:
         else:
             self._hand_data_left.append([])
             self._hand_data_right.append([])
+        # HumanEgo metric hand data
+        if self._latest_hands_he is not None:
+            self._hand_data_humanego.append(list(self._latest_hands_he))
+        else:
+            self._hand_data_humanego.append([])
         self._frame_idx += 1
 
     def write_vio(self, transform: np.ndarray):
@@ -185,6 +199,12 @@ class HumanEgoRecorder:
         if not self._active:
             return
         self._latest_hands = hands
+
+    def write_hands_humanego(self, role: str, humanego_hands: list[dict]):
+        """Store pre-formatted HumanEgo hand dicts for the current frame."""
+        if not self._active:
+            return
+        self._latest_hands_he = humanego_hands
 
     # ── helpers ────────────────────────────────────────────────────
 
@@ -223,11 +243,25 @@ def _write_slam_json(frame_dir, idx, slam_frames):
         json.dump(data, f, indent=2)
 
 
-def _write_hands_json(frame_dir, idx, hand_data_left, hand_data_right, timestamps_us):
-    def _pack(entries):
-        if not entries:
+def _write_hands_json(frame_dir, idx, hand_data_left, hand_data_right,
+                      hand_data_humanego, timestamps_us):
+    """Write per-frame aria_hands.json.
+
+    Prefers the tracker-preformatted humanego hand dicts (with proper metric 3D,
+    Aria ordering, wrist_pose, etc.). Falls back to constructing from raw pixel
+    landmarks when the humanego data is unavailable.
+    """
+    def _pack_from_he(he_entries, fallback_entries):
+        """Try using the preformatted humanego hand dict first."""
+        if he_entries:
+            for label, he_dict in he_entries:
+                # Return a copy of the tracker-built dict (session-wide fields
+                # like d2c/c2w are None and will be filled by the downstream pipeline)
+                return he_dict
+        # Fallback: construct basic dict from pixel landmarks
+        if not fallback_entries:
             return None
-        for label, lms in entries:
+        for _, lms in fallback_entries:
             lms_np = np.asarray(lms, dtype=np.float64)
             if lms_np.shape[0] < 21:
                 continue
@@ -264,11 +298,18 @@ def _write_hands_json(frame_dir, idx, hand_data_left, hand_data_right, timestamp
         return None
 
     n_ts = len(timestamps_us)
+    he_left = [h for h in (hand_data_humanego[idx] if idx < len(hand_data_humanego) else [])
+               if h[0].lower().startswith("l")]
+    he_right = [h for h in (hand_data_humanego[idx] if idx < len(hand_data_humanego) else [])
+                if h[0].lower().startswith("r")]
+    fallback_left = hand_data_left[idx] if idx < len(hand_data_left) else []
+    fallback_right = hand_data_right[idx] if idx < len(hand_data_right) else []
+
     data = {
         "idx": idx,
         "ts": int(timestamps_us[idx] * 1000) if idx < n_ts and timestamps_us[idx] > 0 else 0,
-        "hand_l": _pack(hand_data_left[idx] if idx < len(hand_data_left) else []),
-        "hand_r": _pack(hand_data_right[idx] if idx < len(hand_data_right) else []),
+        "hand_l": _pack_from_he(he_left, fallback_left),
+        "hand_r": _pack_from_he(he_right, fallback_right),
     }
     with open(frame_dir / "aria_hands.json", "w") as f:
         json.dump(data, f, indent=2)

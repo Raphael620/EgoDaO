@@ -140,6 +140,7 @@ class MainWindow(QMainWindow):
         self._capture = CaptureWorker(self._cfg)
         self._capture.frame_ready.connect(self._on_frame)
         self._capture.hands_ready.connect(self._on_hands)
+        self._capture.hands_humanego_ready.connect(self._on_hands_humanego)
         self._capture.imu_ready.connect(self._on_imu)
         self._capture.vio_ready.connect(self._on_vio)
         self._capture.pipeline_stats.connect(self._on_stats)
@@ -195,14 +196,21 @@ class MainWindow(QMainWindow):
 
     # ── signal handlers ────────────────────────────────────────────
 
-    @Slot(str, np.ndarray, int)
-    def _on_frame(self, role: str, bgr: np.ndarray, ts_us: int = 0):
+    @Slot(str, np.ndarray)
+    def _on_frame(self, role: str, bgr: np.ndarray):
         self._camera_view.set_frame(role, bgr)
         self._frame_count += 1
         if self._recorder and self._recorder.is_recording:
             self._recorder.write_frame(role, bgr)
         if self._he_recorder and self._he_recorder.is_recording and role == "center":
+            # Use monotonic counter as timestamp (μs precision not needed for HE)
+            ts_us = self._frame_count
             self._he_recorder.write_frame_rgb(bgr, ts_us)
+
+    @Slot(str, list)
+    def _on_hands_humanego(self, role: str, humanego_hands: list):
+        if self._he_recorder and self._he_recorder.is_recording:
+            self._he_recorder.write_hands_humanego(role, humanego_hands)
 
     @Slot(str, list)
     def _on_hands(self, role: str, hands: list):

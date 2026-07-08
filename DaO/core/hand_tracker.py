@@ -1,12 +1,73 @@
-"""Hand tracking — MediaPipe 0.10+ Tasks API (host-side)."""
+"""Hand tracking — MediaPipe 0.10+ Tasks API (host-side).
+
+Provides online temporal smoothing (outlier rejection + median filter + EMA),
+absolute 3D metric recovery in camera frame, and Aria MPS keypoint ordering.
+"""
 from __future__ import annotations
 
-import os, urllib.request
+import os
+import urllib.request
 import numpy as np
 import cv2
 
 _MODEL_PATH = os.path.join(os.path.dirname(__file__), "hand_landmarker.task")
 _MODEL_URL = "https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/latest/hand_landmarker.task"
+
+# Average adult hand: wrist to middle MCP ≈ 0.085m
+_HAND_SIZE_WRIST_TO_MIDDLE_MCP_M = 0.085
+
+# ── MediaPipe 21-point → Aria MPS 21-point index mapping ──────────
+# MediaPipe: 0=Wrist, 1=ThumbCMC, 2=ThumbMCP, 3=ThumbIP, 4=ThumbTip,
+#            5=IndexMCP, 6=IndexPIP, 7=IndexDIP, 8=IndexTip,
+#            9=MiddleMCP, 10=MiddlePIP, 11=MiddleDIP, 12=MiddleTip,
+#            13=RingMCP, 14=RingPIP, 15=RingDIP, 16=RingTip,
+#            17=PinkyMCP, 18=PinkyPIP, 19=PinkyDIP, 20=PinkyTip
+# Aria:  0=ThumbTip, 1=IndexTip, 2=MiddleTip, 3=RingTip, 4=PinkyTip,
+#        5=Wrist, 6=ThumbMCP, 7=ThumbIP, 8=IndexMCP, 9=IndexPIP, 10=IndexDIP,
+#        11=MiddleMCP, 12=MiddlePIP, 13=MiddleDIP,
+#        14=RingMCP, 15=RingPIP, 16=RingDIP,
+#        17=PinkyMCP, 18=PinkyPIP, 19=PinkyDIP,
+#        20=PalmCenter (computed)
+_MP_TO_ARIA = [
+    4,   # Aria 0  = ThumbTip     ← MP 4
+    8,   # Aria 1  = IndexTip     ← MP 8
+    12,  # Aria 2  = MiddleTip    ← MP 12
+    16,  # Aria 3  = RingTip      ← MP 16
+    20,  # Aria 4  = PinkyTip     ← MP 20
+    0,   # Aria 5  = Wrist        ← MP 0
+    2,   # Aria 6  = ThumbMCP     ← MP 2
+    3,   # Aria 7  = ThumbIP      ← MP 3
+    5,   # Aria 8  = IndexMCP     ← MP 5
+    6,   # Aria 9  = IndexPIP     ← MP 6
+    7,   # Aria 10 = IndexDIP     ← MP 7
+    9,   # Aria 11 = MiddleMCP    ← MP 9
+    10,  # Aria 12 = MiddlePIP    ← MP 10
+    11,  # Aria 13 = MiddleDIP    ← MP 11
+    13,  # Aria 14 = RingMCP      ← MP 13
+    14,  # Aria 15 = RingPIP      ← MP 14
+    15,  # Aria 16 = RingDIP      ← MP 15
+    17,  # Aria 17 = PinkyMCP     ← MP 17
+    18,  # Aria 18 = PinkyPIP     ← MP 18
+    19,  # Aria 19 = PinkyDIP     ← MP 19
+    -1,  # Aria 20 = PalmCenter   ← computed (mean of Wrist, IndexMCP, MiddleMCP)
+]
+
+
+def _remap_mp_to_aria(kpts_mp_21: np.ndarray) -> np.ndarray:
+    """Remap (21, 3) MediaPipe keypoints to Aria MPS ordering."""
+    kpts_aria = np.zeros((21, 3), dtype=kpts_mp_21.dtype)
+    for aria_idx in range(20):
+        mp_idx = _MP_TO_ARIA[aria_idx]
+        kpts_aria[aria_idx] = kpts_mp_21[mp_idx]
+    # Aria 20 = PalmCenter ≈ mean(Wrist=MP0, IndexMCP=MP5, MiddleMCP=MP9)
+    kpts_aria[20] = (kpts_mp_21[0] + kpts_mp_21[5] + kpts_mp_21[9]) / 3.0
+    return kpts_aria
+
+
+def _remap_2d_mp_to_aria(kpts_mp_21: np.ndarray) -> np.ndarray:
+    """Remap (21, 2) MediaPipe 2D keypoints to Aria MPS ordering."""
+    kpts3d = np.column_stack([kpts_mp_21, np.zeros(21, dtype=kpts_mp_21.dtype)])
+    return _remap_mp_to_aria(kpts3d)[:, :2]
 
 
 def _ensure_model():
@@ -14,8 +75,113 @@ def _ensure_model():
         urllib.request.urlretrieve(_MODEL_URL, _MODEL_PATH)
 
 
+# ── Online temporal filter ───────────────────────────────────────
+
+class HandLandmarkFilter:
+    """Online temporal filter for hand landmarks.
+
+    Three cascaded stages:
+    1. Outlier rejection — wrist position jump exceeding speed limit
+    2. Moving median — element-wise median of last N detections
+    3. 3D EMA — exponential moving average on all 21×3 coordinates
+
+    State is per-hand-label to handle multiple hands independently.
+    """
+
+    def __init__(self, history_len=3, ema_alpha=0.7, wrist_speed_limit_px=200,
+                 miss_reset_frames=3):
+        self._history_len = history_len
+        self._ema_alpha = float(ema_alpha)
+        self._wrist_speed_limit = float(wrist_speed_limit_px)
+        self._miss_reset = miss_reset_frames
+
+        self._buffers: dict[str, list[np.ndarray]] = {}     # label → list of (21,3)
+        self._ema_state: dict[str, np.ndarray] = {}          # label → (21,3)
+        self._prev_wrist: dict[str, np.ndarray] = {}          # label → (3,)
+        self._misses: dict[str, int] = {}                     # label → int
+
+    def apply(self, raw_hands: list[tuple[str, np.ndarray]]) -> list[tuple[str, np.ndarray]]:
+        """Process raw detections through the filter cascade.
+
+        Args:
+            raw_hands: List of ``(label, (21,3) array in pixel coords)``.
+
+        Returns:
+            Filtered results, same format. Outlier hands are omitted.
+        """
+        filtered: list[tuple[str, np.ndarray]] = []
+        active_labels: set[str] = set()
+
+        for label, lms in raw_hands:
+            active_labels.add(label)
+            wrist = lms[0].copy()  # MediaPipe index 0 = Wrist
+
+            # ── Stage 1: Outlier rejection ──
+            prev_w = self._prev_wrist.get(label)
+            if prev_w is not None:
+                jump = float(np.linalg.norm(wrist - prev_w))
+                if jump > self._wrist_speed_limit:
+                    self._misses[label] = self._misses.get(label, 0) + 1
+                    if self._misses.get(label, 0) >= self._miss_reset:
+                        self._reset_label(label)
+                    continue
+
+            # Accepted
+            self._misses[label] = 0
+            self._prev_wrist[label] = wrist
+
+            # ── Stage 2: Moving median ──
+            buf = self._buffers.setdefault(label, [])
+            buf.append(lms.copy())
+            if len(buf) > self._history_len:
+                buf.pop(0)
+            median_lms = np.median(np.array(buf, dtype=np.float64), axis=0)  # (21,3)
+
+            # ── Stage 3: 3D EMA ──
+            prev_ema = self._ema_state.get(label)
+            if prev_ema is not None:
+                smoothed = (1.0 - self._ema_alpha) * prev_ema + self._ema_alpha * median_lms
+            else:
+                smoothed = median_lms.copy()
+            self._ema_state[label] = smoothed
+
+            filtered.append((label, smoothed.astype(np.float32)))
+
+        # Hands that disappeared this frame
+        for label in list(self._prev_wrist.keys()):
+            if label not in active_labels:
+                self._misses[label] = self._misses.get(label, 0) + 1
+                if self._misses.get(label, 0) >= self._miss_reset:
+                    self._reset_label(label)
+
+        return filtered
+
+    def _reset_label(self, label: str) -> None:
+        self._buffers.pop(label, None)
+        self._ema_state.pop(label, None)
+        self._prev_wrist.pop(label, None)
+        self._misses.pop(label, None)
+
+    def reset(self) -> None:
+        """Clear all filter state."""
+        self._buffers.clear()
+        self._ema_state.clear()
+        self._prev_wrist.clear()
+        self._misses.clear()
+
+
+# ── MediaPipe hand tracker ───────────────────────────────────────
+
 class MediaPipeHandTracker:
-    def __init__(self, max_num_hands=2, min_detection_confidence=0.3):
+    """MediaPipe HandLandmarker with optional temporal smoothing and
+    3D metric recovery in camera frame.
+
+    Uses ``RunningMode.VIDEO`` so ``hand_world_landmarks`` are available
+    for absolute depth estimation.
+    """
+
+    def __init__(self, max_num_hands=2, min_detection_confidence=0.3,
+                 K=None, enable_filter=True):
         _ensure_model()
         import mediapipe as mp
         from mediapipe.tasks.python import vision
@@ -23,37 +189,252 @@ class MediaPipeHandTracker:
         self._mp = mp
         options = vision.HandLandmarkerOptions(
             base_options=mp_base.BaseOptions(model_asset_path=_MODEL_PATH),
-            running_mode=vision.RunningMode.IMAGE,
+            running_mode=vision.RunningMode.VIDEO,
             num_hands=max_num_hands,
             min_hand_detection_confidence=min_detection_confidence,
             min_hand_presence_confidence=0.3,
             min_tracking_confidence=0.3,
         )
         self._detector = vision.HandLandmarker.create_from_options(options)
+        self._K: np.ndarray | None = np.asarray(K, dtype=np.float64) if K is not None else None
+        self._frame_timestamp_ms = 0
+        self._filter = HandLandmarkFilter() if enable_filter else None
 
-    def process(self, bgr: np.ndarray) -> list[tuple[str, np.ndarray]]:
+    def set_intrinsics(self, K: np.ndarray) -> None:
+        self._K = np.asarray(K, dtype=np.float64)
+
+    @property
+    def has_intrinsics(self) -> bool:
+        return self._K is not None
+
+    def process(self, bgr: np.ndarray, apply_filter: bool = True,
+                compute_metric_3d: bool = False):
+        """Run hand detection on a BGR frame.
+
+        Args:
+            bgr: BGR or grayscale image.
+            apply_filter: Apply temporal smoothing (outlier rejection +
+                median + EMA).  Only valid when the filter is enabled.
+            compute_metric_3d: Recover absolute 3D in camera frame (meters)
+                and remap to Aria MPS ordering. Requires ``set_intrinsics()``.
+
+        Returns:
+            ``(pixel_hands, humanego_hands)`` tuple.
+
+            *pixel_hands*: ``[(label, (21,3) pixel-coord array), ...]`` for UI.
+            *humanego_hands*: ``[(label, dict), ...]`` with metric 3D data
+            (empty when ``compute_metric_3d`` is False or K is not set).
+        """
         h, w = bgr.shape[:2]
         if len(bgr.shape) == 2 or bgr.shape[2] == 1:
             rgb = cv2.cvtColor(bgr, cv2.COLOR_GRAY2RGB)
         else:
-            # bgr[..., ::-1] creates a non-contiguous view — make contiguous
-            # in-place to avoid a full copy when possible
             rgb = np.ascontiguousarray(bgr[..., ::-1])
         mp_img = self._mp.Image(image_format=self._mp.ImageFormat.SRGB, data=rgb)
-        result = self._detector.detect(mp_img)
-        hands = []
+
+        self._frame_timestamp_ms += 33  # ~30 FPS
+        result = self._detector.detect_for_video(mp_img, self._frame_timestamp_ms)
+
+        raw_hands: list[tuple[str, np.ndarray, np.ndarray | None]] = []
         if result.hand_landmarks and result.handedness:
-            for lms, hns in zip(result.hand_landmarks, result.handedness):
+            world_landmarks = result.hand_world_landmarks or [None] * len(result.hand_landmarks)
+            for lms, world_lms, hns in zip(result.hand_landmarks, world_landmarks,
+                                            result.handedness):
                 label = hns[0].category_name
                 arr = np.zeros((21, 3), dtype=np.float32)
                 for i, lm in enumerate(lms):
                     arr[i] = [lm.x * w, lm.y * h, lm.z * w]
-                hands.append((label, arr))
-        return hands
+                wl_arr = None
+                if world_lms is not None:
+                    wl_arr = np.array([[lm.x, lm.y, lm.z] for lm in world_lms],
+                                      dtype=np.float32)
+                raw_hands.append((label, arr, wl_arr))
+
+        # ── Apply temporal filter (pixel space) ──
+        pixel_hands: list[tuple[str, np.ndarray]]
+        if self._filter is not None and apply_filter:
+            # Feed raw (label, array) pairs into the filter
+            raw_for_filter = [(l, a) for l, a, _ in raw_hands]
+            pixel_hands = self._filter.apply(raw_for_filter)
+        else:
+            pixel_hands = [(l, a) for l, a, _ in raw_hands]
+
+        # ── HumanEgo-compatible metric 3D output ──
+        humanego_hands: list[tuple[str, dict]] = []
+        if compute_metric_3d and self._K is not None:
+            for label, arr, wl_arr in raw_hands:
+                if wl_arr is None or wl_arr.shape != (21, 3):
+                    continue
+                kpts_cam_mp = self._recover_absolute_3d(arr[:, :2], wl_arr, h, w)
+                if kpts_cam_mp is None:
+                    continue
+
+                # Remap to Aria ordering
+                kpts_cam_aria = _remap_mp_to_aria(kpts_cam_mp)
+                kpts_2d_aria = _remap_2d_mp_to_aria(arr[:, :2])
+
+                is_right = label.lower().startswith("r")
+
+                # Build wrist pose
+                wrist_pose = _build_wrist_pose(kpts_cam_aria)
+                wrist_pos_cam = kpts_cam_aria[5]  # Aria 5 = Wrist
+
+                # Grasp state
+                grasp_state = _compute_grasp_state(kpts_cam_aria)
+
+                he_dict = {
+                    "d2c": None,
+                    "c2w": None,
+                    "confidence": 0.8,
+                    "grasp_state": grasp_state,
+                    "wrist_pose": wrist_pose.tolist() if wrist_pose is not None else np.eye(4).tolist(),
+                    "palm_pose": wrist_pose.tolist() if wrist_pose is not None else np.eye(4).tolist(),
+                    "kpts_3d": kpts_cam_aria.tolist(),
+                    "kpts_2d": kpts_2d_aria.tolist(),
+                    "joint_angles": {},
+                    "wrist_pose_raw_world": wrist_pose.tolist() if wrist_pose is not None else np.eye(4).tolist(),
+                    "wrist_pose_opt_world": wrist_pose.tolist() if wrist_pose is not None else np.eye(4).tolist(),
+                    "wrist_lin_vel_raw_world": [0, 0, 0],
+                    "wrist_ang_vel_raw_world": [0, 0, 0],
+                    "wrist_lin_vel_opt_world": [0, 0, 0],
+                    "wrist_ang_vel_opt_world": [0, 0, 0],
+                    "index_translation_raw_world": kpts_cam_aria[1].tolist()[:3],   # Aria 1=IndexTip
+                    "index_translation_opt_world": kpts_cam_aria[1].tolist()[:3],
+                    "thumb_translation_raw_world": kpts_cam_aria[0].tolist()[:3],   # Aria 0=ThumbTip
+                    "thumb_translation_opt_world": kpts_cam_aria[0].tolist()[:3],
+                    "midpoint_pose_raw_world": wrist_pose.tolist() if wrist_pose is not None else np.eye(4).tolist(),
+                    "midpoint_pose_opt_world": wrist_pose.tolist() if wrist_pose is not None else np.eye(4).tolist(),
+                    "midpoint_translation_raw_world": wrist_pos_cam.tolist()[:3],
+                    "midpoint_orientation_raw_world": [[1, 0, 0], [0, 1, 0], [0, 0, 1]],
+                    "midpoint_translation_opt_world": wrist_pos_cam.tolist()[:3],
+                    "midpoint_orientation_opt_world": [[1, 0, 0], [0, 1, 0], [0, 0, 1]],
+                    "midpoint_lin_vel_raw_world": [0, 0, 0],
+                    "midpoint_ang_vel_raw_world": [0, 0, 0],
+                    "midpoint_lin_vel_opt_world": [0, 0, 0],
+                    "midpoint_ang_vel_opt_world": [0, 0, 0],
+                    "distance_midpoint2wrist_raw_world": 0.0,
+                    "distance_midpoint2wrist_opt_world": 0.0,
+                    "is_right": is_right,
+                }
+                humanego_hands.append((label, he_dict))
+
+        return pixel_hands, humanego_hands
+
+    # ── 3D metric recovery ──────────────────────────────────────
+
+    def _recover_absolute_3d(
+        self,
+        kpts_2d_mp: np.ndarray,       # (21, 2) pixel coords
+        kpts_world_mp: np.ndarray,    # (21, 3) hand-centered meters
+        h_img: int,
+        w_img: int,
+    ) -> np.ndarray | None:
+        """Recover absolute 3D keypoints in camera frame (meters).
+
+        Strategy:
+        1. Measure wrist→middle_MCP physical distance from world_landmarks.
+        2. Measure same distance in 2D pixels.
+        3. Estimate wrist depth: z = focal * physical_dist / pixel_dist.
+        4. Back-project wrist to camera frame.
+        5. Add relative offsets from world_landmarks.
+
+        Returns (21, 3) in metres or None if invalid.
+        """
+        K = self._K
+        if K is None:
+            return None
+        fx, fy = K[0, 0], K[1, 1]
+        cx, cy = K[0, 2], K[1, 2]
+        focal = (fx + fy) / 2.0
+
+        wrist_2d = kpts_2d_mp[0]
+        middle_mcp_2d = kpts_2d_mp[9]
+        wrist_world = kpts_world_mp[0]
+        middle_mcp_world = kpts_world_mp[9]
+
+        physical_dist = float(np.linalg.norm(middle_mcp_world - wrist_world))
+        if physical_dist < 0.01:
+            physical_dist = _HAND_SIZE_WRIST_TO_MIDDLE_MCP_M
+
+        pixel_dist = float(np.linalg.norm(middle_mcp_2d - wrist_2d))
+        if pixel_dist < 5.0:
+            return None
+
+        z_wrist = focal * physical_dist / pixel_dist
+        if z_wrist < 0.05 or z_wrist > 3.0:
+            return None
+
+        x_wrist = (wrist_2d[0] - cx) * z_wrist / fx
+        y_wrist = (wrist_2d[1] - cy) * z_wrist / fy
+        wrist_cam = np.array([x_wrist, y_wrist, z_wrist], dtype=np.float32)
+
+        offsets = kpts_world_mp - kpts_world_mp[0:1]
+        kpts_cam = wrist_cam[np.newaxis, :] + offsets
+
+        kpts_cam[:, 2] = np.clip(kpts_cam[:, 2], 0.01, None)
+        return kpts_cam.astype(np.float32)
 
     def close(self):
         self._detector.close()
+        if self._filter is not None:
+            self._filter.reset()
 
+
+# ── Wrist pose builder ────────────────────────────────────────────
+
+def _build_wrist_pose(kpts_cam_aria: np.ndarray) -> np.ndarray | None:
+    """Build wrist SE(3) pose from Aria-ordered keypoints in camera frame.
+
+    Y = wrist→palm direction, Z = palm normal, X = cross(Y, Z).
+    Uses: Aria 5=Wrist, 20=PalmCenter, 8=IndexMCP, 11=MiddleMCP.
+    """
+    wrist_pos = kpts_cam_aria[5]
+    palm_center = kpts_cam_aria[20]
+    index_mcp = kpts_cam_aria[8]
+    middle_mcp = kpts_cam_aria[11]
+
+    v_wrist_palm = palm_center - wrist_pos
+    norm = np.linalg.norm(v_wrist_palm)
+    if norm < 1e-6:
+        return None
+    y_axis = v_wrist_palm / norm
+
+    v_lateral = index_mcp - middle_mcp
+    x_axis = np.cross(y_axis, v_lateral)
+    x_norm = np.linalg.norm(x_axis)
+    if x_norm < 1e-6:
+        return None
+    x_axis /= x_norm
+    z_axis = np.cross(x_axis, y_axis)
+    z_axis /= (np.linalg.norm(z_axis) + 1e-6)
+    y_axis = np.cross(z_axis, x_axis)  # re-orthonormalise
+
+    wrist_pose = np.eye(4, dtype=np.float64)
+    wrist_pose[:3, :3] = np.column_stack([x_axis, y_axis, z_axis])
+    wrist_pose[:3, 3] = wrist_pos
+    return wrist_pose
+
+
+def _compute_grasp_state(kpts_cam_aria: np.ndarray) -> int:
+    """Binary grasp: 1=closed, 0=open.
+
+    Based on thumb-tip (Aria 0) to index-tip (Aria 1) distance,
+    normalised by palm size (wrist Aria 5 → middle_MCP Aria 11).
+    """
+    thumb_tip = kpts_cam_aria[0]
+    index_tip = kpts_cam_aria[1]
+    wrist = kpts_cam_aria[5]
+    mid_mcp = kpts_cam_aria[11]
+
+    distance = float(np.linalg.norm(thumb_tip - index_tip))
+    palm_size = float(np.linalg.norm(mid_mcp - wrist))
+    if palm_size > 0.01:
+        ratio = distance / palm_size
+        return 1 if ratio < 1.0 else 0
+    return 0
+
+
+# ── Factory ──────────────────────────────────────────────────────
 
 def create_hand_tracker(backend="mediapipe", **kwargs):
     if backend == "mediapipe":
