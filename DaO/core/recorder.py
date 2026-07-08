@@ -88,12 +88,15 @@ class DataRecorder:
         # Lazy VideoWriter initialisation
         if role not in self._writers:
             h, w = frame.shape[:2]
-            fourcc = cv2.VideoWriter_fourcc(*self._cfg.recording.video_codec)
-            writer = cv2.VideoWriter(
-                self._writer_paths[role], fourcc, self._cfg.camera.fps, (w, h))
-            if writer.isOpened():
-                self._writers[role] = writer
-            else:
+            for codec in (self._cfg.recording.video_codec, "mp4v", "XVID"):
+                fourcc = cv2.VideoWriter_fourcc(*codec)
+                writer = cv2.VideoWriter(
+                    self._writer_paths[role], fourcc, self._cfg.camera.fps, (w, h))
+                if writer.isOpened():
+                    self._writers[role] = writer
+                    break
+                writer.release()
+            if role not in self._writers:
                 return
         w = self._writers.get(role)
         if w is not None:

@@ -38,3 +38,9 @@ depthai_hand_tracker/
 # Test / development artifacts
 test/
 *.blob
+
+# Nuitka build output
+dist/
+
+# Local-only build script (machine-specific paths)
+build-here.bat
