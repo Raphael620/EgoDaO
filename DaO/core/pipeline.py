@@ -51,7 +51,7 @@ def create_pipeline(device: dai.Device, config: AppConfig):
         sock = _find_socket(ordered, role)
         if sock is None:
             continue
-        cam = p.create(dai.node.Camera).build(sock, sensorFps=30)
+        cam = p.create(dai.node.Camera).build(sock, sensorFps=config.camera.fps)
         try:
             cam_queues[role] = cam.requestFullResolutionOutput().createOutputQueue(maxSize=4, blocking=False)
         except RuntimeError:

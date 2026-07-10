@@ -185,10 +185,18 @@ class MainWindow(QMainWindow):
         self._sb_status.setText(f"录制中 — {d.name}")
 
     def _stop_recording(self):
+        # Close raw recorder first so mp4 files are flushed to disk,
+        # then pass the center-camera mp4 path to HE recorder for frame extraction.
+        center_mp4 = None
         if self._recorder:
+            # Capture mp4 path before stop() clears state
+            if hasattr(self._recorder, '_session_dir') and self._recorder._session_dir:
+                center_mp4 = str(self._recorder._session_dir / "center_cam.mp4")
             self._recorder.stop()
             self._recorder = None
         if self._he_recorder:
+            if center_mp4:
+                self._he_recorder.set_mp4_source(center_mp4)
             self._he_recorder.stop()
             self._he_recorder = None
         self._btn_record.setText("录制")

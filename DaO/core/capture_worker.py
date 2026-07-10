@@ -107,6 +107,9 @@ class CaptureWorker(QObject):
 
                     self.frame_ready.emit(role, bgr)
                     any_data = True
+                    fc += 1
+                    if role == "center":
+                        fps_fc += 1  # only count center-camera frames
 
                     if self._hand_tracker is not None and role == "center":
                         cnt = self._hand_skip_counter["center"] + 1
@@ -145,13 +148,13 @@ class CaptureWorker(QObject):
                             self.vio_ready.emit(m)
                             any_data = True
 
-                if any_data:
-                    fc += 1
-                    fps_fc += 1
-
                 elapsed = time.perf_counter() - fps_t0
                 if elapsed >= 1.0:
-                    self.pipeline_stats.emit({"fps": fps_fc / elapsed, "frames": fc})
+                    # fps_fc counts camera frames only (3 cameras × 30 fps = 90)
+                    self.pipeline_stats.emit({
+                        "fps": fps_fc / elapsed,
+                        "frames": fc,
+                    })
                     fps_fc, fps_t0 = 0, time.perf_counter()
 
                 if not any_data:

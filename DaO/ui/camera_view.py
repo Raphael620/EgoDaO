@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import numpy as np
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, QTimer
 from PySide6.QtGui import QColor, QFont, QImage, QPainter, QPen, QPixmap
 from PySide6.QtWidgets import QFrame, QHBoxLayout, QLabel, QVBoxLayout, QWidget
 
@@ -18,19 +18,20 @@ HAND_CONNECTIONS = [
     (5, 9), (9, 13), (13, 17),
 ]
 
-# Pre-allocate colors to avoid QColor construction every frame
 _COLOR_LEFT = QColor(100, 200, 255)
 _COLOR_RIGHT = QColor(255, 150, 80)
 _COLOR_LEFT_BRIGHT = QColor(220, 220, 255)
 _COLOR_KEYPOINT_LEFT = QColor(100, 200, 255)
 _COLOR_KEYPOINT_RIGHT = QColor(255, 150, 80)
 
+
 class CameraPane(QFrame):
     """A single camera feed pane with hand skeleton overlay.
 
-    Rendering is event-driven: set_frame() triggers an immediate render.
-    The camera pipeline is already capped at 30 FPS by hardware, so no
-    additional throttling is needed.
+    Rendering skips frames when the event loop is backed up: each
+    ``set_frame()`` call bumps a generation token.  A coalescing
+    zero-delay timer defers rendering to the next event-loop tick;
+    only the latest generation is rendered, avoiding wasted work.
     """
 
     def __init__(self, role: str, parent=None):
@@ -58,28 +59,36 @@ class CameraPane(QFrame):
         self._bgr: np.ndarray | None = None
         self._hands: list[tuple[str, np.ndarray]] = []
 
-        # Cached scale factor — recomputed only on resize
+        # Scale cache
         self._scale = 1.0
         self._dw = 0
         self._dh = 0
         self._last_lbl_w = 0
         self._last_lbl_h = 0
 
+        # Deferred render with generation token — prevents render-pileup
+        self._gen = 0
+        self._render_timer = QTimer(self)
+        self._render_timer.setTimerType(Qt.TimerType.CoarseTimer)
+        self._render_timer.setSingleShot(True)
+        self._render_timer.timeout.connect(self._do_render)
+
     def set_frame(self, bgr: np.ndarray | None):
         self._bgr = bgr
-        self._do_render()
+        self._gen += 1
+        # Defer rendering to next event-loop tick; only latest gen renders
+        if not self._render_timer.isActive():
+            self._render_timer.start(0)
 
     def set_hands(self, hands: list[tuple[str, np.ndarray]]):
-        """Set hand landmarks. Expects pixel-coordinate landmarks (21, 2) or (21, 3).
-
-        The skeleton is drawn on the next call to set_frame().
-        """
+        """Set hand landmarks. Skeleton is drawn on next render cycle."""
         self._hands = hands
 
     def _do_render(self):
         if self._bgr is None:
             return
 
+        gen = self._gen
         bgr = self._bgr
         h, w = bgr.shape[:2]
         lbl_w = self._image_label.width()
@@ -87,7 +96,7 @@ class CameraPane(QFrame):
         if lbl_w < 2 or lbl_h < 2:
             return
 
-        # Recompute scale only when label size changes (e.g. window resize)
+        # Recompute scale only when label size changes
         if lbl_w != self._last_lbl_w or lbl_h != self._last_lbl_h:
             self._last_lbl_w = lbl_w
             self._last_lbl_h = lbl_h
@@ -102,12 +111,10 @@ class CameraPane(QFrame):
         # Build QImage directly without colour conversion
         ndim = bgr.ndim if hasattr(bgr, "ndim") else len(bgr.shape)
         if ndim == 3 and bgr.shape[2] == 3:
-            # BGR 3-channel (center camera) — use Format_BGR888 directly
             if not bgr.flags["C_CONTIGUOUS"]:
                 bgr = np.ascontiguousarray(bgr)
             qimg = QImage(bgr.data, w, h, bgr.strides[0], QImage.Format.Format_BGR888)
         else:
-            # Mono (left/right cameras) — use Grayscale8
             if ndim == 3:
                 gray = bgr[:, :, 0]
             else:
@@ -116,7 +123,7 @@ class CameraPane(QFrame):
                 gray = np.ascontiguousarray(gray)
             qimg = QImage(gray.data, w, h, gray.strides[0], QImage.Format.Format_Grayscale8)
 
-        # Scale QImage first, then convert to QPixmap (cheaper than pixmap scaling)
+        # Scale QImage first, then convert to QPixmap
         pix = QPixmap.fromImage(
             qimg.scaled(dw, dh, Qt.AspectRatioMode.KeepAspectRatio,
                        Qt.TransformationMode.SmoothTransformation)
@@ -139,15 +146,12 @@ class CameraPane(QFrame):
 
                 side = "left" if label.lower().startswith("l") else "right"
                 color = _COLOR_LEFT if side == "left" else _COLOR_RIGHT
-
-                # Connections
                 pen.setColor(color)
                 painter.setPen(pen)
                 for a, b in HAND_CONNECTIONS:
                     if a < len(sx) and b < len(sx):
                         painter.drawLine(int(sx[a]), int(sy[a]), int(sx[b]), int(sy[b]))
 
-                # Keypoints
                 painter.setPen(Qt.PenStyle.NoPen)
                 kp_color = _COLOR_KEYPOINT_LEFT if side == "left" else _COLOR_KEYPOINT_RIGHT
                 painter.setBrush(kp_color)
@@ -155,18 +159,20 @@ class CameraPane(QFrame):
                     r = 4 if j == 0 else 3
                     painter.drawEllipse(int(sx[j]) - r, int(sy[j]) - r, r * 2, r * 2)
 
-                # Label
                 painter.setPen(_COLOR_LEFT_BRIGHT)
                 painter.setFont(QFont("Segoe UI", 10, QFont.Weight.Bold))
                 painter.drawText(int(sx[0]) + 6, int(sy[0]) - 6, label)
 
             painter.end()
 
+        # Skip if a newer generation arrived while we were painting
+        if self._gen != gen:
+            return
+
         self._image_label.setPixmap(pix)
 
     def paintEvent(self, event):
         super().paintEvent(event)
-        # During resize, re-render if we already have a frame
         if self._bgr is not None and self._image_label.pixmap() is None:
             self._do_render()
 

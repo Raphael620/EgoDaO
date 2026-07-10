@@ -23,6 +23,7 @@ class RecordingConfig:
     raw_subdir: str = "Raw"
     humanego_subdir: str = "HumanEgo"
     video_codec: str = "mp4v"
+    video_backend: str = "opencv"    # "opencv" (cv2.VideoWriter) or "ffmpeg_hw" (h264_mf)
 
 
 @dataclass
