@@ -1,0 +1,21 @@
+{
+  "recording": {
+    "data_root": "./Data",
+    "raw_subdir": "Raw",
+    "humanego_subdir": "HumanEgo",
+    "video_codec": "mp4v",
+    "video_backend": "opencv"
+  },
+  "camera": {
+    "resolution": [1280, 800],
+    "fps": 30
+  },
+  "imu": {
+    "accel_rate_hz": 480,
+    "gyro_rate_hz": 400
+  },
+  "app": {
+    "enable_vio": true,
+    "enable_hand_tracking": true
+  }
+}

@@ -75,80 +75,92 @@ def _ensure_model():
         urllib.request.urlretrieve(_MODEL_URL, _MODEL_PATH)
 
 
-# ── Online temporal filter ───────────────────────────────────────
+# ── Minimal temporal filter ──────────────────────────────────────
 
 class HandLandmarkFilter:
-    """Online temporal filter for hand landmarks.
+    """Temporal filter for hand landmarks with label stability.
 
-    Three cascaded stages:
-    1. Outlier rejection — wrist position jump exceeding speed limit
-    2. Moving median — element-wise median of last N detections
-    3. 3D EMA — exponential moving average on all 21×3 coordinates
-
-    State is per-hand-label to handle multiple hands independently.
+    - Outlier rejection: wrist jumps > ``wrist_speed_limit_px`` discarded.
+    - Adaptive smoothing: more at rest, less during fast movement.
+    - Handedness stabilisation: when MediaPipe flips left/right labels,
+      corrects based on wrist proximity to the previous track.
     """
 
-    def __init__(self, history_len=3, ema_alpha=0.7, wrist_speed_limit_px=200,
-                 miss_reset_frames=3):
-        self._history_len = history_len
-        self._ema_alpha = float(ema_alpha)
+    def __init__(self, wrist_speed_limit_px=200, smoothing=0.5,
+                 miss_reset_frames=5):
         self._wrist_speed_limit = float(wrist_speed_limit_px)
+        self._smoothing = float(smoothing)
         self._miss_reset = miss_reset_frames
 
-        self._buffers: dict[str, list[np.ndarray]] = {}     # label → list of (21,3)
-        self._ema_state: dict[str, np.ndarray] = {}          # label → (21,3)
-        self._prev_wrist: dict[str, np.ndarray] = {}          # label → (3,)
-        self._misses: dict[str, int] = {}                     # label → int
+        self._prev: dict[str, np.ndarray] = {}      # true_label -> (21,3)
+        self._misses: dict[str, int] = {}
+        self._label_map: dict[str, str] = {}         # raw label -> true_label
 
     def apply(self, raw_hands: list[tuple[str, np.ndarray]]) -> list[tuple[str, np.ndarray]]:
-        """Process raw detections through the filter cascade.
+        # ── resolve handedness ──
+        mapped: list[tuple[str, np.ndarray]] = []
+        if len(raw_hands) == 2 and len(self._prev) == 2:
+            # Two hands tracked — check for label swap
+            l0, k0 = raw_hands[0]
+            l1, k1 = raw_hands[1]
+            prev_keys = list(self._prev.keys())
+            d00 = np.linalg.norm(k0[0] - self._prev[prev_keys[0]][0])
+            d11 = np.linalg.norm(k1[0] - self._prev[prev_keys[1]][0])
+            d01 = np.linalg.norm(k0[0] - self._prev[prev_keys[1]][0])
+            d10 = np.linalg.norm(k1[0] - self._prev[prev_keys[0]][0])
+            if d01 + d10 < d00 + d11:
+                # Swap back
+                self._label_map[l0] = prev_keys[1]
+                self._label_map[l1] = prev_keys[0]
+                mapped.append((prev_keys[1], k0))
+                mapped.append((prev_keys[0], k1))
+            else:
+                self._label_map[l0] = prev_keys[0]
+                self._label_map[l1] = prev_keys[1]
+                mapped.append((prev_keys[0], k0))
+                mapped.append((prev_keys[1], k1))
+        else:
+            for label, lms in raw_hands:
+                true = self._label_map.get(label, label)
+                self._label_map[label] = true
+                mapped.append((true, lms))
 
-        Args:
-            raw_hands: List of ``(label, (21,3) array in pixel coords)``.
-
-        Returns:
-            Filtered results, same format. Outlier hands are omitted.
-        """
+        # ── filter ──
         filtered: list[tuple[str, np.ndarray]] = []
         active_labels: set[str] = set()
 
-        for label, lms in raw_hands:
-            active_labels.add(label)
-            wrist = lms[0].copy()  # MediaPipe index 0 = Wrist
+        for true_label, lms in mapped:
+            active_labels.add(true_label)
+            lms64 = lms.astype(np.float64)
 
-            # ── Stage 1: Outlier rejection ──
-            prev_w = self._prev_wrist.get(label)
-            if prev_w is not None:
-                jump = float(np.linalg.norm(wrist - prev_w))
+            prev = self._prev.get(true_label)
+            if prev is not None:
+                jump = float(np.linalg.norm(lms64[0] - prev[0]))
                 if jump > self._wrist_speed_limit:
-                    self._misses[label] = self._misses.get(label, 0) + 1
-                    if self._misses.get(label, 0) >= self._miss_reset:
-                        self._reset_label(label)
+                    self._misses[true_label] = self._misses.get(true_label, 0) + 1
+                    if self._misses.get(true_label, 0) >= self._miss_reset:
+                        self._reset_label(true_label)
+                    filtered.append((true_label, prev.astype(np.float32)))
                     continue
 
-            # Accepted
-            self._misses[label] = 0
-            self._prev_wrist[label] = wrist
+                speed = jump
+                if speed < 5.0:
+                    alpha = self._smoothing
+                elif speed > 60.0:
+                    alpha = 1.0
+                else:
+                    t = (speed - 5.0) / 55.0
+                    alpha = self._smoothing + (1.0 - self._smoothing) * t
 
-            # ── Stage 2: Moving median ──
-            buf = self._buffers.setdefault(label, [])
-            buf.append(lms.copy())
-            if len(buf) > self._history_len:
-                buf.pop(0)
-            median_lms = np.median(np.array(buf, dtype=np.float64), axis=0)  # (21,3)
-
-            # ── Stage 3: 3D EMA ──
-            prev_ema = self._ema_state.get(label)
-            if prev_ema is not None:
-                smoothed = (1.0 - self._ema_alpha) * prev_ema + self._ema_alpha * median_lms
+                smoothed = (1.0 - alpha) * prev + alpha * lms64
             else:
-                smoothed = median_lms.copy()
-            self._ema_state[label] = smoothed
+                smoothed = lms64
 
-            filtered.append((label, smoothed.astype(np.float32)))
+            self._misses[true_label] = 0
+            self._prev[true_label] = smoothed
+            filtered.append((true_label, smoothed.astype(np.float32)))
 
-        # Hands that disappeared this frame
-        for label in list(self._prev_wrist.keys()):
+        for label in list(self._prev.keys()):
             if label not in active_labels:
                 self._misses[label] = self._misses.get(label, 0) + 1
                 if self._misses.get(label, 0) >= self._miss_reset:
@@ -157,17 +169,17 @@ class HandLandmarkFilter:
         return filtered
 
     def _reset_label(self, label: str) -> None:
-        self._buffers.pop(label, None)
-        self._ema_state.pop(label, None)
-        self._prev_wrist.pop(label, None)
+        self._prev.pop(label, None)
         self._misses.pop(label, None)
+        # Remove any mapping that points to this label
+        for k, v in list(self._label_map.items()):
+            if v == label:
+                del self._label_map[k]
 
     def reset(self) -> None:
-        """Clear all filter state."""
-        self._buffers.clear()
-        self._ema_state.clear()
-        self._prev_wrist.clear()
+        self._prev.clear()
         self._misses.clear()
+        self._label_map.clear()
 
 
 # ── MediaPipe hand tracker ───────────────────────────────────────
