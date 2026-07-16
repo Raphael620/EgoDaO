@@ -50,11 +50,12 @@ class _OpenCVWriter(_BaseVideoWriter):
 
 
 class _FFmpegHWWriter(_BaseVideoWriter):
-    """FFmpeg h264_mf (MediaFoundation) hardware encoder via subprocess pipe."""
+    """FFmpeg hardware encoder via subprocess pipe (Intel QSV, MF, D3D12VA, etc.)."""
 
     _FFMPEG_PATH = "D:/Develop/bin/ffmpeg-n8.1-latest-win64-gpl-8.1/bin/ffmpeg.exe"
 
-    def __init__(self, path: str, fps: int, w: int, h: int):
+    def __init__(self, path: str, fps: int, w: int, h: int,
+                 encoder: str = "h264_qsv"):
         self._path = path
         self._h, self._w = h, w
         self._proc = None
@@ -67,9 +68,9 @@ class _FFmpegHWWriter(_BaseVideoWriter):
             "-video_size", f"{w}x{h}",
             "-framerate", str(fps),
             "-i", "pipe:0",
-            "-c:v", "h264_mf",
+            "-c:v", encoder,
             "-b:v", "8M",
-            "-pix_fmt", "yuv420p",
+            "-pix_fmt", "nv12",
             path,
         ]
         try:
@@ -83,11 +84,14 @@ class _FFmpegHWWriter(_BaseVideoWriter):
     def write(self, frame: np.ndarray) -> None:
         if self._stream is None:
             return
-        # Ensure BGR 3-channel
+        # Ensure BGR 3-channel, then FFmpeg converts BGR -> NV12 natively
         if frame.ndim == 2:
             frame = cv2.cvtColor(frame, cv2.COLOR_GRAY2BGR)
         elif frame.shape[2] == 1:
             frame = cv2.cvtColor(frame, cv2.COLOR_GRAY2BGR)
+        # ensure contiguous for tobytes
+        if not frame.flags["C_CONTIGUOUS"]:
+            frame = np.ascontiguousarray(frame)
         try:
             self._stream.write(frame.tobytes())
         except (BrokenPipeError, OSError):
@@ -110,11 +114,11 @@ class _FFmpegHWWriter(_BaseVideoWriter):
 
 
 def _create_writer(path: str, backend: str, codec: str,
-                   fps: int, w: int, h: int) -> _BaseVideoWriter | None:
+                   fps: int, w: int, h: int, hw_encoder: str = "h264_qsv") -> _BaseVideoWriter | None:
     """Factory: create a video writer, falling back to OpenCV if HW fails."""
     if backend == "ffmpeg_hw":
         try:
-            return _FFmpegHWWriter(path, fps, w, h)
+            return _FFmpegHWWriter(path, fps, w, h, encoder=hw_encoder)
         except Exception:
             pass  # Fall through to OpenCV
     # Default: OpenCV
@@ -198,7 +202,8 @@ class DataRecorder:
             path = str(self._session_dir / f"{role}_cam.mp4")
             wtr = _create_writer(path, self._cfg.recording.video_backend,
                                  self._cfg.recording.video_codec,
-                                 self._cfg.camera.fps, w, h)
+                                 self._cfg.camera.fps, w, h,
+                                 self._cfg.recording.hw_encoder)
             if wtr is not None:
                 self._writers[role] = wtr
             else:

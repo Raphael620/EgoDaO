@@ -41,7 +41,7 @@ def _load_config() -> dict:
 def _apply_config(cfg_obj, cfg: dict):
     rec = cfg.get("recording", {})
     for key in ("data_root", "raw_subdir", "humanego_subdir",
-                "video_codec", "video_backend"):
+                "video_codec", "video_backend", "hw_encoder"):
         if key in rec:
             setattr(cfg_obj.recording, key,
                     Path(rec[key]) if key == "data_root" else rec[key])

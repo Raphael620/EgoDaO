@@ -23,7 +23,8 @@ class RecordingConfig:
     raw_subdir: str = "Raw"
     humanego_subdir: str = "HumanEgo"
     video_codec: str = "mp4v"
-    video_backend: str = "opencv"
+    video_backend: str = "ffmpeg_hw"    # "ffmpeg_hw" (Intel QSV) or "opencv" (cv2.VideoWriter)
+    hw_encoder: str = "h264_qsv"        # encoder: h264_qsv, h264_mf, h264_d3d12va, etc.
     enable_raw: bool = True          # record raw mp4 + csv/jsonl
     enable_humanego: bool = False    # record HumanEgo-format per-frame data
     disk_keep_days: int = 3          # auto-clean raw folders older than N days (0 = disabled)

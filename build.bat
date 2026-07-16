@@ -27,5 +27,9 @@ if %ERRORLEVEL% NEQ 0 (
 )
 
 echo.
+echo === Copying config.json ===
+if exist "%PROJECT_DIR%config.json" copy /y "%PROJECT_DIR%config.json" "%PROJECT_DIR%dist\main.dist\config.json" >nul
+
+echo.
 echo === Build complete ===
 echo EXE: %PROJECT_DIR%dist\main.dist\main.exe

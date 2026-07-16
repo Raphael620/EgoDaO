@@ -5,6 +5,7 @@
     "humanego_subdir": "HumanEgo",
     "video_codec": "mp4v",
     "video_backend": "opencv",
+    "hw_encoder": "h264_qsv",
     "enable_raw": true,
     "enable_humanego": false,
     "disk_keep_days": 3
