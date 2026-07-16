@@ -1,5 +1,0 @@
-2026-07-16 16:53:53 [INFO] egodao: Logging started → D:\WorkSpace\ei\test\EgoDaO\logs\egodao_20260716_165353.log
-2026-07-16 16:53:53 [INFO] egodao: EgoDaO starting (data_root=D:\WorkSpace\ei\test\EgoDaO\Data)
-2026-07-16 16:53:53 [INFO] egodao: Headless: cmd socket on 127.0.0.1:9876
-2026-07-16 16:53:54 [INFO] egodao: Headless: Ctrl+Q hotkey registered
-2026-07-16 16:53:54 [INFO] egodao: Headless: running (Ctrl+Q to toggle recording, Ctrl+C in terminal to exit)
