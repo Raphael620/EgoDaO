@@ -26,6 +26,8 @@ import json
 import os
 import threading
 from datetime import datetime
+from DaO.core.data_formats import (default_intrinsics, compute_slam_frames,
+                                    rotmat_to_rpy_zyx_deg, pack_hand, build_training_data)
 from pathlib import Path
 from typing import Any
 
@@ -157,7 +159,7 @@ class HumanEgoRecorder:
 
         # Gather data that the worker needs (no copies — worker runs
         # after all write_*() calls have stopped)
-        K = self._K if self._K is not None else self._default_intrinsics()
+        K = self._K if self._K is not None else self.default_intrinsics()
         payload = {
             "session_dir": self._session_dir,
             "total": total,
@@ -247,7 +249,7 @@ class HumanEgoRecorder:
             return
         self._latest_hands_he = humanego_hands
 
-    def _default_intrinsics(self) -> np.ndarray:
+    def default_intrinsics(self) -> np.ndarray:
         w, h = self._w, self._h
         fx = w / (2.0 * np.tan(np.radians(self._fov / 2.0)))
         return np.array([[fx, 0, w / 2], [0, fx, h / 2], [0, 0, 1]], dtype=np.float64)
@@ -270,15 +272,23 @@ def _flush_worker(payload: dict):
     mp4_src = payload.get("mp4_source")
     frame_backup = payload.get("frame_backup", [])
 
-    slam_frames = _compute_slam_frames(vio_frames, timestamps_us)
+    slam_frames = compute_slam_frames(vio_frames, timestamps_us)
 
     # Open mp4 for frame extraction if available
     cap = None
     if mp4_src and os.path.isfile(mp4_src):
-        cap = cv2.VideoCapture(mp4_src)
-        mp4_total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT)) if cap.isOpened() else 0
-        if mp4_total == 0:
-            cap.release(); cap = None
+        try:
+            cap = cv2.VideoCapture(mp4_src)
+            if cap.isOpened():
+                mp4_total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+                if mp4_total == 0:
+                    cap.release()
+                    cap = None
+            else:
+                cap.release()
+                cap = None
+        except Exception:
+            cap = None
 
     # I/O queue pipeline for parallelism (PNG encoding is slow)
     q = queue.Queue(maxsize=200)
@@ -344,8 +354,8 @@ def _flush_worker(payload: dict):
             "data": {
                 "idx": idx,
                 "ts": int(timestamps_us[idx] * 1000) if idx < len(timestamps_us) and timestamps_us[idx] > 0 else 0,
-                "hand_l": _pack_hand(he_left, fbl),
-                "hand_r": _pack_hand(he_right, fbr),
+                "hand_l": pack_hand(he_left, fbl),
+                "hand_r": pack_hand(he_right, fbr),
             },
         })
 
@@ -353,7 +363,7 @@ def _flush_worker(payload: dict):
         q.put({
             "action": "write_json",
             "path": str(frame_dir / "training_data.json"),
-            "data": _build_training_data(idx, ts_ns, w, h, fps, K, c2w),
+            "data": build_training_data(idx, ts_ns, w, h, fps, K, c2w),
         })
 
     if cap is not None:
@@ -361,114 +371,3 @@ def _flush_worker(payload: dict):
 
     q.put(_STOP_SENTINEL)
     worker.join(timeout=300)
-
-
-def _build_training_data(idx, ts_ns, w, h, fps, K, c2w):
-    return {
-        "metadata": {
-            "idx": idx, "ts": ts_ns, "w": w, "h": h, "fps": fps,
-            "k": K.tolist(), "c2w": c2w, "anchor_key": "obj1",
-            "is_finished": 0.0,
-            "world_transforms": {
-                "cam0": np.eye(4).tolist(),
-                "virtual_static_anchor": np.eye(4).tolist(),
-            },
-        },
-        "obs": {
-            "rgb_path": f"preprocess/all_data/{idx:05d}/rgb.png",
-            "mask_arm_path": "", "mask_obj_path": "",
-            "rgb_WArmObjKpts_path": "", "rgb_WoArm_path": "",
-            "rgb_WoArm_WArmObjKpts_path": "",
-        },
-        "entities": {"hands": {}, "objects": {}},
-    }
-
-
-def _pack_hand(he_entries, fallback_entries):
-    if he_entries:
-        for _label, he_dict in he_entries:
-            return he_dict
-    if not fallback_entries:
-        return None
-    for _label, lms in fallback_entries:
-        lms_np = np.asarray(lms, dtype=np.float64)
-        if lms_np.shape[0] < 21:
-            continue
-        wrist = lms_np[0].copy()
-        pose = np.eye(4); pose[:3, 3] = wrist
-        return {
-            "d2c": None, "c2w": None, "confidence": 0.8, "grasp_state": 0,
-            "wrist_pose": pose.tolist(), "palm_pose": pose.tolist(),
-            "kpts_3d": lms_np.tolist(), "kpts_2d": lms_np[:, :2].tolist(),
-            "joint_angles": {},
-            "wrist_pose_raw_world": pose.tolist(),
-            "wrist_pose_opt_world": pose.tolist(),
-            "wrist_lin_vel_raw_world": [0, 0, 0],
-            "wrist_ang_vel_raw_world": [0, 0, 0],
-            "wrist_lin_vel_opt_world": [0, 0, 0],
-            "wrist_ang_vel_opt_world": [0, 0, 0],
-            "index_translation_raw_world": lms_np[8].tolist()[:3],
-            "index_translation_opt_world": lms_np[8].tolist()[:3],
-            "thumb_translation_raw_world": lms_np[4].tolist()[:3],
-            "thumb_translation_opt_world": lms_np[4].tolist()[:3],
-            "midpoint_pose_raw_world": pose.tolist(),
-            "midpoint_pose_opt_world": pose.tolist(),
-            "midpoint_translation_raw_world": wrist.tolist()[:3],
-            "midpoint_orientation_raw_world": [[1,0,0],[0,1,0],[0,0,1]],
-            "midpoint_translation_opt_world": wrist.tolist()[:3],
-            "midpoint_orientation_opt_world": [[1,0,0],[0,1,0],[0,0,1]],
-            "midpoint_lin_vel_raw_world": [0,0,0],
-            "midpoint_ang_vel_raw_world": [0,0,0],
-            "midpoint_lin_vel_opt_world": [0,0,0],
-            "midpoint_ang_vel_opt_world": [0,0,0],
-            "distance_midpoint2wrist_raw_world": 0.0,
-            "distance_midpoint2wrist_opt_world": 0.0,
-        }
-    return None
-
-
-# ── SLAM helpers ──────────────────────────────────────────────────
-
-def _compute_slam_frames(transforms, timestamps_us):
-    n = len(transforms)
-    if n == 0:
-        return []
-    t_world = np.array([m[:3, 3] for m in transforms], dtype=np.float64)
-    rpy_deg = np.array([_rotmat_to_rpy_zyx_deg(m[:3, :3]) for m in transforms], dtype=np.float64)
-    delta_t = t_world - t_world[0]
-    delta_rpy = rpy_deg - rpy_deg[0]
-    yaws = np.unwrap(np.radians(rpy_deg[:, 2]))
-    n_ts = len(timestamps_us)
-    frames = []
-    for i in range(n):
-        ts_ns = int(timestamps_us[i] * 1000) if i < n_ts else 0
-        if i > 0 and i < n_ts and (i - 1) < n_ts:
-            dt_us = max(timestamps_us[i] - timestamps_us[i - 1], 1)
-            dt = dt_us / 1e6
-        else:
-            dt = 1.0 / 30.0
-        v = float(np.linalg.norm(t_world[i] - t_world[i - 1]) / max(dt, 1e-6)) if i > 0 else 0.0
-        w = float(abs(yaws[i] - yaws[i - 1]) / max(dt, 1e-6)) if i > 0 else 0.0
-        frames.append({
-            "idx": i, "ts": ts_ns,
-            "t_world": t_world[i].tolist(),
-            "rpy_deg": rpy_deg[i].tolist(),
-            "delta_t_world": delta_t[i].tolist(),
-            "delta_rpy_deg": delta_rpy[i].tolist(),
-            "linear_speed_mps": v, "angular_speed_rps": w,
-            "yaw_unwrapped_deg": float(np.degrees(yaws[i])),
-        })
-    return frames
-
-
-def _rotmat_to_rpy_zyx_deg(R):
-    sy = np.sqrt(R[0, 0] ** 2 + R[1, 0] ** 2)
-    if sy > 1e-6:
-        roll = np.arctan2(R[2, 1], R[2, 2])
-        pitch = np.arctan2(-R[2, 0], sy)
-        yaw = np.arctan2(R[1, 0], R[0, 0])
-    else:
-        roll = np.arctan2(-R[1, 2], R[1, 1])
-        pitch = np.arctan2(-R[2, 0], sy)
-        yaw = 0.0
-    return np.degrees([roll, pitch, yaw])

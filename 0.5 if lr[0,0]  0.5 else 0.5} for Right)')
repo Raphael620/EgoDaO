@@ -1,0 +1,4 @@
+  File "<string>", line 41
+    print(f'Hand {i}: lr={lr[0,0]:.4f} (should be {
+                                                  ^
+SyntaxError: '{' was never closed

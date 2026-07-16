@@ -11,9 +11,9 @@ class CameraConfig:
 
 @dataclass
 class ImuConfig:
-    accel_rate_hz: int = 200
-    gyro_rate_hz: int = 200
-    batch_threshold: int = 1
+    accel_rate_hz: int = 480
+    gyro_rate_hz: int = 400
+    batch_threshold: int = 5
     max_batch_reports: int = 20
 
 
@@ -23,10 +23,7 @@ class RecordingConfig:
     raw_subdir: str = "Raw"
     humanego_subdir: str = "HumanEgo"
     video_codec: str = "mp4v"
-    video_backend: str = "opencv"
-    enable_raw: bool = True          # record raw mp4 + csv/jsonl
-    enable_humanego: bool = False    # record HumanEgo-format per-frame data
-    disk_keep_days: int = 3          # auto-clean raw folders older than N days (0 = disabled)
+    video_backend: str = "opencv"    # "opencv" (cv2.VideoWriter) or "ffmpeg_hw" (h264_mf)
 
 
 @dataclass
@@ -36,5 +33,4 @@ class AppConfig:
     recording: RecordingConfig = field(default_factory=RecordingConfig)
     enable_vio: bool = True
     enable_hand_tracking: bool = True
-    hand_tracker_backend: str = "mediapipe"  # "mediapipe" (CPU), "openvino" (Intel GPU), "mercury" (ONNX experimental)
     vio_camera_resolution: tuple[int, int] = (640, 400)

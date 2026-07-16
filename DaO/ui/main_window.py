@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import os
+import threading
+from pathlib import Path
 
 import numpy as np
 from PySide6.QtCore import Qt, QTimer, Slot
@@ -79,6 +81,11 @@ class MainWindow(QMainWindow):
         self._btn_record.setEnabled(False)
         toolbar.addWidget(self._btn_record)
         toolbar.addSeparator()
+        self._btn_convert = QPushButton("转换")
+        self._btn_convert.setToolTip("将Raw数据转换为HumanEgo格式")
+        self._btn_convert.clicked.connect(self._convert_raw)
+        toolbar.addWidget(self._btn_convert)
+        toolbar.addSeparator()
         self._label_device = QLabel("设备未连接")
         self._label_device.setStyleSheet("color: #888; padding: 0 8px;")
         toolbar.addWidget(self._label_device)
@@ -147,6 +154,7 @@ class MainWindow(QMainWindow):
         self._capture.pipeline_error.connect(self._on_error)
         self._capture.pipeline_started.connect(self._on_pipeline_started)
         self._capture.pipeline_stopped.connect(self._on_pipeline_stopped)
+        self._capture.hotkey_toggle.connect(self._toggle_recording)
         self._capture.start()
         self._frame_count = 0
         self._vio_pt_count = 0
@@ -177,19 +185,22 @@ class MainWindow(QMainWindow):
             self._start_recording()
 
     def _start_recording(self):
-        self._recorder = DataRecorder(self._cfg)
-        d = self._recorder.start()
-        self._he_recorder = HumanEgoRecorder(self._cfg)
-        self._he_recorder.start()
+        if self._cfg.recording.enable_raw:
+            self._recorder = DataRecorder(self._cfg)
+            d = self._recorder.start()
+        if self._cfg.recording.enable_humanego:
+            self._he_recorder = HumanEgoRecorder(self._cfg)
+            self._he_recorder.start()
+        if self._capture:
+            self._capture._he_recording_active = bool(
+                self._cfg.recording.enable_humanego)
         self._btn_record.setText("停止录制")
-        self._sb_status.setText(f"录制中 — {d.name}")
+        d = self._recorder._session_dir if self._recorder else Path(".")
+        self._sb_status.setText(f"录制中")
 
     def _stop_recording(self):
-        # Close raw recorder first so mp4 files are flushed to disk,
-        # then pass the center-camera mp4 path to HE recorder for frame extraction.
         center_mp4 = None
         if self._recorder:
-            # Capture mp4 path before stop() clears state
             if hasattr(self._recorder, '_session_dir') and self._recorder._session_dir:
                 center_mp4 = str(self._recorder._session_dir / "center_cam.mp4")
             self._recorder.stop()
@@ -199,8 +210,40 @@ class MainWindow(QMainWindow):
                 self._he_recorder.set_mp4_source(center_mp4)
             self._he_recorder.stop()
             self._he_recorder = None
+        if self._capture:
+            self._capture._he_recording_active = False
         self._btn_record.setText("录制")
         self._sb_status.setText("录制已保存")
+
+    def _convert_raw(self):
+        """Select a Raw session folder and convert to HumanEgo format."""
+        from PySide6.QtWidgets import QFileDialog
+        raw_root = str(self._cfg.recording.data_root / self._cfg.recording.raw_subdir)
+        folder = QFileDialog.getExistingDirectory(
+            self, "选择要转换的Raw数据文件夹", raw_root)
+        if not folder:
+            return
+
+        self._btn_convert.setEnabled(False)
+        self._sb_status.setText("转换中...")
+
+        import threading
+        def _run_convert():
+            try:
+                from DaO.core.converter import convert_session
+                convert_session(Path(folder), self._cfg.recording.data_root,
+                                self._cfg.recording.humanego_subdir)
+                self._sb_status.setText("转换完成")
+            except Exception as e:
+                self._sb_status.setText(f"转换失败: {e}")
+                import logging
+                logging.getLogger("egodao").exception("Conversion failed")
+            finally:
+                self._btn_convert.setEnabled(True)
+
+        t = threading.Thread(target=_run_convert, daemon=True)
+        t.start()
+
 
     # ── signal handlers ────────────────────────────────────────────
 
@@ -211,9 +254,7 @@ class MainWindow(QMainWindow):
         if self._recorder and self._recorder.is_recording:
             self._recorder.write_frame(role, bgr)
         if self._he_recorder and self._he_recorder.is_recording and role == "center":
-            # Use monotonic counter as timestamp (μs precision not needed for HE)
-            ts_us = self._frame_count
-            self._he_recorder.write_frame_rgb(bgr, ts_us)
+            self._he_recorder.write_frame_rgb(bgr, self._frame_count)
 
     @Slot(str, list)
     def _on_hands_humanego(self, role: str, humanego_hands: list):

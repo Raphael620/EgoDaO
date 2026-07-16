@@ -15,6 +15,7 @@ class CaptureWorker(QObject):
     frame_ready = Signal(str, np.ndarray)
     hands_ready = Signal(str, list)
     hands_humanego_ready = Signal(str, list)
+    hotkey_toggle = Signal()  # emitted when Ctrl+Q global hotkey is pressed
     imu_ready = Signal(list)
     vio_ready = Signal(np.ndarray)
     pipeline_stats = Signal(dict)
@@ -22,7 +23,7 @@ class CaptureWorker(QObject):
     pipeline_started = Signal()
     pipeline_stopped = Signal()
 
-    _HAND_INTERVAL = 1
+    _HAND_INTERVAL = 1  # run hand tracking every N frames
 
     def __init__(self, config=None, parent=None):
         super().__init__(parent)
@@ -32,6 +33,7 @@ class CaptureWorker(QObject):
         self._device = None
         self._hand_tracker = None
         self._hand_skip_counter = {"center": 0}
+        self._he_recording_active = False
 
     def start(self):
         if self._thread and self._thread.is_alive():
@@ -39,6 +41,22 @@ class CaptureWorker(QObject):
         self._stop_event.clear()
         self._thread = threading.Thread(target=self._run, daemon=True)
         self._thread.start()
+        self._start_hotkey_listener()
+
+    def _start_hotkey_listener(self):
+        """Register global Ctrl+Q hotkey to toggle recording."""
+        try:
+            import keyboard
+            keyboard.add_hotkey("ctrl+q", self._on_hotkey, suppress=False)
+        except Exception as e:
+            sys.stderr.write(f"Hotkey registration failed: {e}\n")
+
+    def _on_hotkey(self):
+        """Called from keyboard hook thread when Ctrl+Q is pressed."""
+        try:
+            self.hotkey_toggle.emit()
+        except Exception:
+            pass
 
     def stop(self):
         self._stop_event.set()
@@ -79,7 +97,8 @@ class CaptureWorker(QObject):
                 from DaO.core.hand_tracker import create_hand_tracker
                 # Extract camera intrinsics for 3D metric recovery
                 K = _get_center_camera_intrinsics(self._device)
-                self._hand_tracker = create_hand_tracker("mediapipe", K=K)
+                self._hand_tracker = create_hand_tracker(
+                    self._cfg.hand_tracker_backend, K=K)
             except Exception as e:
                 sys.stderr.write(f"HT init failed: {e}\n")
                 self._hand_tracker = None
@@ -117,7 +136,8 @@ class CaptureWorker(QObject):
                             self._hand_skip_counter["center"] = 0
                             try:
                                 pixel_hands, he_hands = self._hand_tracker.process(
-                                    bgr, apply_filter=True, compute_metric_3d=True)
+                                    bgr, apply_filter=True,
+                                    compute_metric_3d=self._he_recording_active)
                                 self.hands_ready.emit(role, pixel_hands)
                                 if he_hands:
                                     self.hands_humanego_ready.emit(role, he_hands)

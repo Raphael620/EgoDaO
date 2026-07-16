@@ -40,7 +40,10 @@ class _OpenCVWriter(_BaseVideoWriter):
             raise RuntimeError(f"OpenCV VideoWriter failed for {path}")
 
     def write(self, frame: np.ndarray) -> None:
-        self._w.write(frame)
+        if frame.ndim == 2:
+            self._w.write(cv2.cvtColor(frame, cv2.COLOR_GRAY2BGR))
+        else:
+            self._w.write(frame)
 
     def close(self) -> None:
         self._w.release()
@@ -200,8 +203,17 @@ class DataRecorder:
                 self._writers[role] = wtr
             else:
                 return
-        self._writers[role].write(bgr)
-        self._frame_counters[role] = self._frame_counters.get(role, 0) + 1
+        try:
+            self._writers[role].write(bgr)
+            self._frame_counters[role] = self._frame_counters.get(role, 0) + 1
+        except Exception:
+            # Video write failure (e.g. USB disconnect, disk full) — warn once
+            if getattr(self, '_write_error_printed', {}).get(role, False) is False:
+                if not hasattr(self, '_write_error_printed'):
+                    self._write_error_printed = {}
+                self._write_error_printed[role] = True
+                import sys
+                sys.stderr.write(f"[recorder] write failed for {role}\n")
 
     def write_imu(self, readings: list[dict]):
         if self._imu_writer is None:

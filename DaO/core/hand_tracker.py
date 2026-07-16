@@ -455,4 +455,18 @@ def create_hand_tracker(backend="mediapipe", **kwargs):
         except ImportError:
             print("MediaPipe not installed — hand tracking disabled")
             return None
+    if backend == "mercury":
+        try:
+            from DaO.core.hand_tracker_mercury import create_mercury_tracker
+            return create_mercury_tracker(**kwargs)
+        except Exception as e:
+            print(f"Mercury hand tracker init failed: {e}")
+            return None
+    if backend == "openvino":
+        try:
+            from DaO.core.hand_tracker_openvino import create_openvino_tracker
+            return create_openvino_tracker(**kwargs)
+        except Exception as e:
+            print(f"OpenVINO hand tracker init failed: {e}")
+            return None
     raise ValueError(f"Unknown hand tracker backend: {backend}")
