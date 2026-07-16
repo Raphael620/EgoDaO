@@ -29,6 +29,7 @@ Thumbs.db
 
 # Data output
 Data/
+logs/
 
 # External SDKs & submodules (not part of this project)
 depthai-core/
