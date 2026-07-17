@@ -5,13 +5,16 @@
     "humanego_subdir": "HumanEgo",
     "video_codec": "mp4v",
     "video_backend": "ffmpeg_hw",
-    "hw_encoder": "h264_qsv",
+    "hw_encoder": "h264_rkmpp",
     "enable_raw": true,
     "enable_humanego": false,
     "disk_keep_days": 3
   },
   "camera": {
-    "resolution": [1280, 800],
+    "resolution": [
+      1280,
+      800
+    ],
     "fps": 30
   },
   "imu": {
@@ -23,6 +26,6 @@
   "app": {
     "enable_vio": true,
     "enable_hand_tracking": true,
-    "hand_tracker_backend": "mediapipe"
+    "hand_tracker_backend": "rknn"
   }
 }

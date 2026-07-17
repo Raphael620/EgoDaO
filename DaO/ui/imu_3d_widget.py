@@ -75,7 +75,7 @@ class Imu3DWidget(QWidget):
                 p.setPen(Qt.NoPen)
                 poly = QPolygonF()
                 from PySide6.QtCore import QPointF
-                poly << QPointF(tip[0], tip[1]) << QPointF(p1[0], p1[1]) << QPointF(p2[0], p2[1])
+                poly = QPolygonF([QPointF(tip[0], tip[1]), QPointF(p1[0], p1[1]), QPointF(p2[0], p2[1])])
                 p.drawPolygon(poly)
 
             # Label near tip

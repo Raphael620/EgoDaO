@@ -469,4 +469,18 @@ def create_hand_tracker(backend="mediapipe", **kwargs):
         except Exception as e:
             print(f"OpenVINO hand tracker init failed: {e}")
             return None
+    if backend == "rknn":
+        try:
+            from DaO.core.hand_tracker_rknn import create_rknn_tracker
+            return create_rknn_tracker(**kwargs)
+        except Exception as e:
+            print(f"RKNN hand tracker init failed: {e}")
+            return None
+    if backend == "tflite":
+        try:
+            from DaO.core.hand_tracker_tflite import create_tflite_tracker
+            return create_tflite_tracker(**kwargs)
+        except Exception as e:
+            print(f"TFLite hand tracker init failed: {e}")
+            return None
     raise ValueError(f"Unknown hand tracker backend: {backend}")

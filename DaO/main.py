@@ -14,6 +14,21 @@ import time
 import threading
 from pathlib import Path
 
+# --- DEBUG: catch capture errors to file ---
+def _install_error_hook():
+    import traceback
+    try:
+        from PySide6 import QtWidgets as _QtW
+        _orig_crit = _QtW.QMessageBox.critical
+        def _crit_patch(parent, title, msg):
+            with open("/tmp/egodao_qt_error.txt", "w") as _ef:
+                _ef.write(f"QMessageBox [{title}]: {msg}")
+            return _orig_crit(parent, title, msg)
+        _QtW.QMessageBox.critical = staticmethod(_crit_patch)
+    except Exception:
+        pass
+_install_error_hook()
+
 _root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _root not in sys.path:
     sys.path.insert(0, _root)

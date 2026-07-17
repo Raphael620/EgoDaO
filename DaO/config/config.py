@@ -37,5 +37,5 @@ class AppConfig:
     recording: RecordingConfig = field(default_factory=RecordingConfig)
     enable_vio: bool = True
     enable_hand_tracking: bool = True
-    hand_tracker_backend: str = "mediapipe"  # "mediapipe" (CPU), "openvino" (Intel GPU), "mercury" (ONNX experimental)
+    hand_tracker_backend: str = "mediapipe"  # "mediapipe" (CPU), "openvino" (Intel GPU), "mercury" (ONNX), "rknn" (NPU), "tflite" (CPU fallback)
     vio_camera_resolution: tuple[int, int] = (640, 400)
