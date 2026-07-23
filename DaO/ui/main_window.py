@@ -56,7 +56,7 @@ class MainWindow(QMainWindow):
     # ── UI construction ────────────────────────────────────────────
 
     def _setup_ui(self):
-        self.setWindowTitle("Ego Daq-O V0.2.3 — Ego 数据采集与实时处理系统")
+        self.setWindowTitle("Ego Daq-O V0.2.3.1 — Ego 数据采集与实时处理系统")
         self.setMinimumSize(1280, 800)
         self.setStyleSheet(STYLESHEET)
 

@@ -1,4 +1,4 @@
-"""Ego Daq-O V0.2.3 — Ego 数据采集与实时处理系统.
+"""Ego Daq-O V0.2.3.1 — Ego 数据采集与实时处理系统.
 
 Usage:
   python -m DaO.main                     # GUI mode (default)

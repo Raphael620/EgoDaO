@@ -1,6 +1,6 @@
 # Ego Daq-O — Ego 数据采集与实时处理系统
 
-> **Version 0.2.3** | 具身智能 Ego 数据采集软件
+> **Version 0.2.3.1** | 具身智能 Ego 数据采集软件
 
 [English](#english) | 中文
 
@@ -21,10 +21,10 @@
 
 从 [Releases](../../releases) 下载对应平台的预编译包即可直接运行：
 
-| 平台 | 包 | 启动命令 |
+| 平台 | 包 | 安装/启动 |
 |------|-----|----------|
-| Windows | `egodao-windows-amd64.zip` | `main.exe` |
-| Linux (Ubuntu) | `egodao-linux-amd64.deb` | `egodao` |
+| Windows | `egodao-windows-amd64.zip` | 解压后运行 `main.exe` |
+| Linux (Ubuntu) | `egodao_<version>_amd64.deb` | `sudo dpkg -i egodao_*.deb` 后运行 `egodao` |
 
 如果需要无 GUI 模式（Headless），使用 `--no-gui` 参数。
 
@@ -81,9 +81,9 @@ sudo apt install libxcb-cursor0 libxcb-shape0 libxcb-xfixes0 libxcb-render-util0
     libxcb-icccm4 libxcb-xkb1
 ```
 
-**2. keyboard 包**
+**2. keyboard 包（Headless 热键）**
 
-`keyboard` 包用于 headless 模式的全局热键（Ctrl+Q），不在 `pyproject.toml` 的默认依赖中，需手动安装：
+`keyboard` 包用于 headless 模式的全局热键（Ctrl+Q 录制切换），已在 `pyproject.toml` 的默认依赖中。如需源码安装：
 
 ```bash
 pip install keyboard
@@ -91,13 +91,24 @@ pip install keyboard
 
 **3. Headless 模式需要 ROOT 权限**
 
-Linux 系统限制：全局系统热键（Ctrl+Q 录制切换）必须 ROOT 权限才能注册：
+Linux 下 `keyboard` 库需要读取 `/dev/input/` 来注册全局系统热键，这要求 root 权限。**这是 keyboard 库的 Linux 限制，与 OAK camera 无关**（OAK 通过 USB 访问，配置 udev rules 后不需要 root）。
 
 ```bash
 sudo /path/to/.venv/bin/python -m DaO.main --no-gui
 ```
 
-**4. 硬件视频编码器**
+预编译 deb 包会在安装时尝试 `setcap cap_sys_rawio+ep` 来解除此限制，如果不生效仍需 sudo。
+
+**4. OAK Camera 设备权限（若相机无法识别）**
+
+```bash
+# 添加 udev 规则（deb 包会自动处理）
+echo 'SUBSYSTEM=="usb", ATTR{idVendor}=="03e7", MODE="0666"' | sudo tee /etc/udev/rules.d/99-depthai.rules
+sudo udevadm control --reload-rules
+sudo udevadm trigger
+```
+
+**5. 硬件视频编码器**
 
 默认 `config.json` 中的 `hw_encoder` 为 `h264_qsv`（Intel QSV，Windows 首选）。Linux 下可改为 `h264_vaapi`：
 
@@ -106,6 +117,13 @@ sudo /path/to/.venv/bin/python -m DaO.main --no-gui
 ```
 
 如果硬件编码不可用，可将 `video_backend` 改为 `"opencv"` 使用 CPU 软件编码（mp4v）。
+
+**6. HumanEgo 格式默认不启用**
+
+录制时默认只输出原始数据（Raw 格式：`.mp4` + `.csv` + `.json`），HumanEgo 兼容格式转录默认关闭以节省磁盘 I/O 和存储空间。如需启用：
+
+- **方式一**：修改 `config.json`，将 `recording.enable_humanego` 设为 `true`
+- **方式二**：录制完成后，在 GUI 中点击「转换」按钮，手动将 Raw 数据转换为 HumanEgo 格式
 
 ### 界面与操作
 

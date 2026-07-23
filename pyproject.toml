@@ -1,6 +1,6 @@
 [project]
 name = "egodao"
-version = "0.2.3"
+version = "0.2.3.1"
 description = "Ego Daq-O — Ego 数据采集与实时处理系统"
 requires-python = ">=3.12,<3.13"
 dependencies = [
