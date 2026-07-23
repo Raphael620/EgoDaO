@@ -6,8 +6,8 @@ set "VENV_PYTHON=%VENV_DIR%\Scripts\python.exe"
 set "MEDIAPIPE_DLL=%VENV_DIR%\Lib\site-packages\mediapipe\tasks\c\libmediapipe.dll"
 
 echo === Cleaning old dist ===
-if exist "%PROJECT_DIR%dist\main.build" rmdir /s /q "%PROJECT_DIR%dist\main.build"
-if exist "%PROJECT_DIR%dist\main.dist" rmdir /s /q "%PROJECT_DIR%dist\main.dist"
+if exist "%PROJECT_DIR%dist\EgoDaO.build" rmdir /s /q "%PROJECT_DIR%dist\EgoDaO.build"
+if exist "%PROJECT_DIR%dist\EgoDaO.dist" rmdir /s /q "%PROJECT_DIR%dist\EgoDaO.dist"
 
 echo === Building with Nuitka ===
 "%VENV_PYTHON%" -m nuitka ^
@@ -18,6 +18,7 @@ echo === Building with Nuitka ===
   --include-data-files="%MEDIAPIPE_DLL%=mediapipe/tasks/c/libmediapipe.dll" ^
   --include-package=DaO ^
   --assume-yes-for-downloads ^
+  --output-filename=EgoDaO ^
   --output-dir="%PROJECT_DIR%dist" ^
   "%PROJECT_DIR%DaO\main.py"
 
@@ -28,8 +29,8 @@ if %ERRORLEVEL% NEQ 0 (
 
 echo.
 echo === Copying config.json ===
-if exist "%PROJECT_DIR%config.json" copy /y "%PROJECT_DIR%config.json" "%PROJECT_DIR%dist\main.dist\config.json" >nul
+if exist "%PROJECT_DIR%config.json" copy /y "%PROJECT_DIR%config.json" "%PROJECT_DIR%dist\EgoDaO.dist\config.json" >nul
 
 echo.
 echo === Build complete ===
-echo EXE: %PROJECT_DIR%dist\main.dist\main.exe
+echo EXE: %PROJECT_DIR%dist\EgoDaO.dist\EgoDaO.exe

@@ -23,7 +23,7 @@
 
 | 平台 | 包 | 安装/启动 |
 |------|-----|----------|
-| Windows | `egodao-windows-amd64.zip` | 解压后运行 `main.exe` |
+| Windows | `egodao-windows-amd64.zip` | 解压后运行 `EgoDaO.exe` |
 | Linux (Ubuntu) | `egodao_<version>_amd64.deb` | `sudo dpkg -i egodao_*.deb` 后运行 `egodao` |
 
 如果需要无 GUI 模式（Headless），使用 `--no-gui` 参数。

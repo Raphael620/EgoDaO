@@ -11,12 +11,13 @@ MEDIAPIPE_LIB_DIR="$VENV_DIR/lib/python3.12/site-packages/mediapipe/tasks/c"
 MEDIAPIPE_SO=$(ls "$MEDIAPIPE_LIB_DIR"/libmediapipe*.so 2>/dev/null | head -1 || echo "")
 
 echo "=== Cleaning old dist ==="
-rm -rf "$PROJECT_DIR/dist/main.build" "$PROJECT_DIR/dist/main.dist"
+rm -rf "$PROJECT_DIR/dist/EgoDaO.build" "$PROJECT_DIR/dist/EgoDaO.dist"
 
 echo "=== Building with Nuitka ==="
 NUIKKA_ARGS=(
   --standalone
   --enable-plugin=pyside6
+  --output-filename=EgoDaO
   --include-data-dir="$PROJECT_DIR/DaO/=DaO/"
   --include-package=DaO
   --assume-yes-for-downloads
@@ -35,12 +36,12 @@ fi
 echo
 echo "=== Copying config.json ==="
 if [ -f "$PROJECT_DIR/config.json" ]; then
-  cp "$PROJECT_DIR/config.json" "$PROJECT_DIR/dist/main.dist/config.json"
+  cp "$PROJECT_DIR/config.json" "$PROJECT_DIR/dist/EgoDaO.dist/config.json"
 fi
 
 echo
 echo "=== Build complete ==="
-echo "Binary: $PROJECT_DIR/dist/main.dist/main.bin"
+echo "Binary: $PROJECT_DIR/dist/EgoDaO.dist/EgoDaO.bin"
 echo
-echo "Run directly:   ./dist/main.dist/main.bin"
-echo "Run headless:   ./dist/main.dist/main.bin --no-gui"
+echo "Run directly:   ./dist/EgoDaO.dist/EgoDaO.bin"
+echo "Run headless:   ./dist/EgoDaO.dist/EgoDaO.bin --no-gui"

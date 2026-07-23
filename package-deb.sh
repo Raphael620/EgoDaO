@@ -2,16 +2,17 @@
 set -eo pipefail
 
 PROJECT_DIR="$(cd "$(dirname "$0")" && pwd)"
-DIST_DIR="$PROJECT_DIR/dist/main.dist"
+DIST_DIR="$PROJECT_DIR/dist/EgoDaO.dist"
 ICON_SRC="$PROJECT_DIR/DaO/icon.png"
+ENTRY_BIN="EgoDaO.bin"
 
 if [ ! -d "$DIST_DIR" ]; then
   echo "ERROR: $DIST_DIR not found. Run build.sh first."
   exit 1
 fi
 
-if [ ! -f "$DIST_DIR/main.bin" ]; then
-  echo "ERROR: $DIST_DIR/main.bin not found. Nuitka build may have failed or output name differs."
+if [ ! -f "$DIST_DIR/$ENTRY_BIN" ]; then
+  echo "ERROR: $DIST_DIR/$ENTRY_BIN not found. Build may have failed."
   exit 1
 fi
 
@@ -33,17 +34,14 @@ mkdir -p "$PKG_ROOT/usr/share/icons/hicolor/256x256/apps"
 
 # ─── Copy compiled files ───
 echo "Copying compiled files..."
-if ! cp -a "$DIST_DIR"/* "$PKG_ROOT/usr/lib/$PACKAGE/"; then
-  echo "ERROR: failed to copy $DIST_DIR to $PKG_ROOT/usr/lib/$PACKAGE/"
-  exit 1
-fi
-chmod 755 "$PKG_ROOT/usr/lib/$PACKAGE/main.bin"
+cp -a "$DIST_DIR"/* "$PKG_ROOT/usr/lib/$PACKAGE/"
+chmod 755 "$PKG_ROOT/usr/lib/$PACKAGE/$ENTRY_BIN"
 
 # ─── Launcher script ───
-cat > "$PKG_ROOT/usr/bin/$PACKAGE" << 'LAUNCHER'
+PROG_BIN="/usr/lib/$PACKAGE/$ENTRY_BIN"
+cat > "$PKG_ROOT/usr/bin/$PACKAGE" << LAUNCHER
 #!/bin/bash
-PROGDIR="/usr/lib/egodao"
-exec "$PROGDIR/main.bin" "$@"
+exec "$PROG_BIN" "\$@"
 LAUNCHER
 chmod 755 "$PKG_ROOT/usr/bin/$PACKAGE"
 
@@ -90,19 +88,21 @@ Description: Ego Daq-O — Ego 数据采集与实时处理系统
 CONTROL
 
 # ─── Post-install script ───
-cat > "$PKG_ROOT/DEBIAN/postinst" << 'POSTINST'
+cat > "$PKG_ROOT/DEBIAN/postinst" << POSTINST
 #!/bin/bash
 set -e
 
-# Give main.bin CAP_SYS_RAWIO for keyboard to work without sudo
-if [ -f /usr/lib/egodao/main.bin ]; then
-  setcap cap_sys_rawio+ep /usr/lib/egodao/main.bin 2>/dev/null || true
+BIN="/usr/lib/$PACKAGE/$ENTRY_BIN"
+
+# Give binary CAP_SYS_RAWIO for keyboard to work without sudo
+if [ -f "\$BIN" ]; then
+  setcap cap_sys_rawio+ep "\$BIN" 2>/dev/null || true
 fi
 
 # Install OAK udev rules (linux device permissions)
 UDEV_RULES="/etc/udev/rules.d/99-depthai.rules"
-if [ ! -f "$UDEV_RULES" ]; then
-  cat > "$UDEV_RULES" << 'UDEV'
+if [ ! -f "\$UDEV_RULES" ]; then
+  cat > "\$UDEV_RULES" << 'UDEV'
 SUBSYSTEM=="usb", ATTR{idVendor}=="03e7", MODE="0666"
 UDEV
   udevadm control --reload-rules 2>/dev/null || true
