@@ -4,23 +4,43 @@ set -euo pipefail
 PROJECT_DIR="$(cd "$(dirname "$0")" && pwd)"
 VENV_DIR="$PROJECT_DIR/.venv"
 VENV_PYTHON="$VENV_DIR/bin/python"
-MEDIAPIPE_DLL="$VENV_DIR/lib/python3.12/site-packages/mediapipe/tasks/c/libmediapipe.dll"
+
+# MediaPipe task library — Linux uses .so, not .dll
+MEDIAPIPE_LIB_DIR="$VENV_DIR/lib/python3.12/site-packages/mediapipe/tasks/c"
+# try to find the exact .so file (name may vary)
+MEDIAPIPE_SO=$(ls "$MEDIAPIPE_LIB_DIR"/libmediapipe*.so 2>/dev/null | head -1 || echo "")
 
 echo "=== Cleaning old dist ==="
 rm -rf "$PROJECT_DIR/dist/main.build" "$PROJECT_DIR/dist/main.dist"
 
 echo "=== Building with Nuitka ==="
-"$VENV_PYTHON" -m nuitka \
-  --standalone \
-  --enable-plugin=pyside6 \
-  --windows-icon-from-ico="$PROJECT_DIR/icon.ico" \
-  --include-data-dir="$PROJECT_DIR/DaO/=DaO/" \
-  --include-data-files="$MEDIAPIPE_DLL=mediapipe/tasks/c/libmediapipe.dll" \
-  --include-package=DaO \
-  --assume-yes-for-downloads \
-  --output-dir="$PROJECT_DIR/dist" \
-  "$PROJECT_DIR/DaO/main.py"
+NUIKKA_ARGS=(
+  --standalone
+  --enable-plugin=pyside6
+  --include-data-dir="$PROJECT_DIR/DaO/=DaO/"
+  --include-package=DaO
+  --assume-yes-for-downloads
+  --output-dir="$PROJECT_DIR/dist"
+)
+
+# Include MediaPipe .so if found
+if [ -n "$MEDIAPIPE_SO" ]; then
+  NUIKKA_ARGS+=(--include-data-files="$MEDIAPIPE_SO=mediapipe/tasks/c/$(basename "$MEDIAPIPE_SO")")
+else
+  echo "WARNING: libmediapipe .so not found at $MEDIAPIPE_LIB_DIR — MediaPipe may not work in compiled binary"
+fi
+
+"$VENV_PYTHON" -m nuitka "${NUIKKA_ARGS[@]}" "$PROJECT_DIR/DaO/main.py"
+
+echo
+echo "=== Copying config.json ==="
+if [ -f "$PROJECT_DIR/config.json" ]; then
+  cp "$PROJECT_DIR/config.json" "$PROJECT_DIR/dist/main.dist/config.json"
+fi
 
 echo
 echo "=== Build complete ==="
-echo "EXE: $PROJECT_DIR/dist/main.dist/main.exe"
+echo "Binary: $PROJECT_DIR/dist/main.dist/main.bin"
+echo
+echo "Run directly:   ./dist/main.dist/main.bin"
+echo "Run headless:   ./dist/main.dist/main.bin --no-gui"
