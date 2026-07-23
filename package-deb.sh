@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-set -euo pipefail
+set -eo pipefail
 
 PROJECT_DIR="$(cd "$(dirname "$0")" && pwd)"
 DIST_DIR="$PROJECT_DIR/dist/main.dist"
@@ -10,37 +10,45 @@ if [ ! -d "$DIST_DIR" ]; then
   exit 1
 fi
 
+if [ ! -f "$DIST_DIR/main.bin" ]; then
+  echo "ERROR: $DIST_DIR/main.bin not found. Nuitka build may have failed or output name differs."
+  exit 1
+fi
+
 # ─── Read version from pyproject.toml ───
 VERSION=$(grep -Po '(?<=^version = ")[^"]*' "$PROJECT_DIR/pyproject.toml")
 PACKAGE="egodao"
-PKG_DIR="/tmp/${PACKAGE}_${VERSION}_amd64"
+PKG_ROOT="$PROJECT_DIR/dist/${PACKAGE}_${VERSION}_amd64"
 DEB_FILE="${PACKAGE}_${VERSION}_amd64.deb"
 
 echo "=== Packaging $PACKAGE v$VERSION ==="
 
-# ─── Clean and create package root ───
-rm -rf "$PKG_DIR"
-mkdir -p "$PKG_DIR/DEBIAN"
-mkdir -p "$PKG_DIR/usr/lib/$PACKAGE"
-mkdir -p "$PKG_DIR/usr/bin"
-mkdir -p "$PKG_DIR/usr/share/applications"
-mkdir -p "$PKG_DIR/usr/share/icons/hicolor/256x256/apps"
+# ─── Clean and create package root under dist/ ───
+rm -rf "$PKG_ROOT"
+mkdir -p "$PKG_ROOT/DEBIAN"
+mkdir -p "$PKG_ROOT/usr/lib/$PACKAGE"
+mkdir -p "$PKG_ROOT/usr/bin"
+mkdir -p "$PKG_ROOT/usr/share/applications"
+mkdir -p "$PKG_ROOT/usr/share/icons/hicolor/256x256/apps"
 
 # ─── Copy compiled files ───
 echo "Copying compiled files..."
-cp -a "$DIST_DIR"/* "$PKG_DIR/usr/lib/$PACKAGE/"
-chmod 755 "$PKG_DIR/usr/lib/$PACKAGE/main.bin"
+if ! cp -a "$DIST_DIR"/* "$PKG_ROOT/usr/lib/$PACKAGE/"; then
+  echo "ERROR: failed to copy $DIST_DIR to $PKG_ROOT/usr/lib/$PACKAGE/"
+  exit 1
+fi
+chmod 755 "$PKG_ROOT/usr/lib/$PACKAGE/main.bin"
 
 # ─── Launcher script ───
-cat > "$PKG_DIR/usr/bin/$PACKAGE" << 'LAUNCHER'
+cat > "$PKG_ROOT/usr/bin/$PACKAGE" << 'LAUNCHER'
 #!/bin/bash
 PROGDIR="/usr/lib/egodao"
 exec "$PROGDIR/main.bin" "$@"
 LAUNCHER
-chmod 755 "$PKG_DIR/usr/bin/$PACKAGE"
+chmod 755 "$PKG_ROOT/usr/bin/$PACKAGE"
 
 # ─── .desktop file ───
-cat > "$PKG_DIR/usr/share/applications/${PACKAGE}.desktop" << DESKTOP
+cat > "$PKG_ROOT/usr/share/applications/${PACKAGE}.desktop" << DESKTOP
 [Desktop Entry]
 Type=Application
 Name=Ego Daq-O
@@ -52,22 +60,21 @@ Terminal=false
 Categories=Science;DataVisualization;
 DESKTOP
 
-# ─── Icon (convert PNG to proper size) ───
+# ─── Icon (resize 1024→256) ───
 if [ -f "$ICON_SRC" ]; then
-  # Use ImageMagick or ffmpeg to resize, fallback to raw copy
   if command -v convert &>/dev/null; then
-    convert "$ICON_SRC" -resize 256x256 "$PKG_DIR/usr/share/icons/hicolor/256x256/apps/${PACKAGE}.png"
+    convert "$ICON_SRC" -resize 256x256 "$PKG_ROOT/usr/share/icons/hicolor/256x256/apps/${PACKAGE}.png"
   elif command -v ffmpeg &>/dev/null; then
-    ffmpeg -y -v quiet -i "$ICON_SRC" -vf scale=256:256 "$PKG_DIR/usr/share/icons/hicolor/256x256/apps/${PACKAGE}.png"
+    ffmpeg -y -v quiet -i "$ICON_SRC" -vf scale=256:256 "$PKG_ROOT/usr/share/icons/hicolor/256x256/apps/${PACKAGE}.png"
   else
-    cp "$ICON_SRC" "$PKG_DIR/usr/share/icons/hicolor/256x256/apps/${PACKAGE}.png"
+    cp "$ICON_SRC" "$PKG_ROOT/usr/share/icons/hicolor/256x256/apps/${PACKAGE}.png"
   fi
 else
   echo "WARNING: icon not found at $ICON_SRC"
 fi
 
 # ─── DEBIAN control ───
-cat > "$PKG_DIR/DEBIAN/control" << CONTROL
+cat > "$PKG_ROOT/DEBIAN/control" << CONTROL
 Package: $PACKAGE
 Version: $VERSION
 Architecture: amd64
@@ -82,8 +89,8 @@ Description: Ego Daq-O — Ego 数据采集与实时处理系统
   and headless mode with global hotkey control.
 CONTROL
 
-# ─── Post-install script (setcap for headless keyboard, udev rules for OAK) ───
-cat > "$PKG_DIR/DEBIAN/postinst" << 'POSTINST'
+# ─── Post-install script ───
+cat > "$PKG_ROOT/DEBIAN/postinst" << 'POSTINST'
 #!/bin/bash
 set -e
 
@@ -104,19 +111,19 @@ fi
 
 exit 0
 POSTINST
-chmod 755 "$PKG_DIR/DEBIAN/postinst"
+chmod 755 "$PKG_ROOT/DEBIAN/postinst"
 
 # ─── Build .deb ───
 echo "Building .deb..."
-dpkg-deb --build "$PKG_DIR" "$PROJECT_DIR/$DEB_FILE"
+dpkg-deb --build "$PKG_ROOT" "$PROJECT_DIR/dist/$DEB_FILE"
 
 echo
 echo "=== Package created ==="
-echo "  $PROJECT_DIR/$DEB_FILE"
+echo "  dist/$DEB_FILE"
 echo
-echo "Install: sudo dpkg -i $DEB_FILE"
+echo "Install: sudo dpkg -i dist/$DEB_FILE"
 echo "Run:     egodao"
 echo "Headless: egodao --no-gui"
 echo
-echo "NOTE: headless mode (-o-gui) hotkey requires running with sudo unless"
+echo "NOTE: headless mode (--no-gui) hotkey requires running with sudo unless"
 echo "      setcap succeeded (CAP_SYS_RAWIO on main.bin)."
