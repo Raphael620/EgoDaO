@@ -1,6 +1,6 @@
 # Ego Daq-O — Ego 数据采集与实时处理系统
 
-> **Version 0.2.1** | 具身智能 Ego 数据采集软件
+> **Version 0.2.3** | 具身智能 Ego 数据采集软件
 
 [English](#english) | 中文
 
@@ -17,24 +17,37 @@
 
 ### 安装与启动
 
-**方式一：uv 包管理器**
+**方式一：预编译包（推荐）**
+
+从 [Releases](../../releases) 下载对应平台的预编译包即可直接运行：
+
+| 平台 | 包 | 启动命令 |
+|------|-----|----------|
+| Windows | `egodao-windows-amd64.zip` | `main.exe` |
+| Linux (Ubuntu) | `egodao-linux-amd64.deb` | `egodao` |
+
+如果需要无 GUI 模式（Headless），使用 `--no-gui` 参数。
+
+**方式二：uv 包管理器（开发/源码运行）**
 
 ```bash
 git clone <repo-url>
 cd EgoDaO
 uv python pin 3.12
 uv sync
-uv pip install pyside6 mediapipe
+uv pip install pyside6 mediapipe keyboard
 python -m DaO.main
 ```
 
-**方式二：手动 venv**
+> **注意**：Linux 下需将 `opencv-python` 替换为 `opencv-python-headless`，详见下方 Linux 平台注意事项。
+
+**方式三：手动 venv（开发/源码运行）**
 
 ```bash
 # Windows
 python -m venv .venv
 .venv\Scripts\activate
-pip install depthai numpy opencv-python pyside6 mediapipe
+pip install depthai numpy opencv-python pyside6 mediapipe keyboard
 python -m DaO.main
 ```
 
@@ -42,29 +55,57 @@ python -m DaO.main
 # Ubuntu / macOS
 python3 -m venv .venv
 source .venv/bin/activate
-pip install depthai numpy opencv-python pyside6 mediapipe
+pip install depthai numpy opencv-python-headless pyside6 mediapipe keyboard
 python -m DaO.main
 ```
 
-**方式三：一键启动（使用预置 .venv）**
+---
 
-如果你从 release 获取了包含 `.venv` 的压缩包，需先修正 Python 路径：
+### Linux 平台注意事项
 
-1. 打开 `.venv\pyvenv.cfg`（Linux: `.venv/pyvenv.cfg`）
-2. 将 `home` 修改为你本机 Python 3.12 的安装路径，例如：
-   ```
-   home = C:\Users\你的用户名\AppData\Roaming\uv\python\cpython-3.12-windows-x86_64-none
-   ```
-   (测试环境为 Python 3.12.13，使用 `uv python pin 3.12` 可获取此路径)
+Linux 下源码运行时需额外处理以下问题：
 
-然后：
+**1. Qt6 xcb 平台插件**
+
+如果遇到 `qt.qpa.plugin: Could not load the Qt platform plugin "xcb"` 错误：
+
 ```bash
-# Windows
-run.bat
+# 必须使用 opencv-python-headless 而非 opencv-python（避免带 Qt 的 opencv 干扰 PySide6）
+uv pip uninstall opencv-python
+uv pip install opencv-python-headless
 
-# Ubuntu / macOS
-chmod +x run.sh && ./run.sh
+# 安装缺失的 xcb 运行时库（Ubuntu/Debian）
+sudo apt update
+sudo apt install libxcb-cursor0 libxcb-shape0 libxcb-xfixes0 libxcb-render-util0 \
+    libxcb-image0 libxcb-keysyms1 libxcb-randr0 libxcb-glx0 libxkbcommon-x11-0 \
+    libxcb-icccm4 libxcb-xkb1
 ```
+
+**2. keyboard 包**
+
+`keyboard` 包用于 headless 模式的全局热键（Ctrl+Q），不在 `pyproject.toml` 的默认依赖中，需手动安装：
+
+```bash
+pip install keyboard
+```
+
+**3. Headless 模式需要 ROOT 权限**
+
+Linux 系统限制：全局系统热键（Ctrl+Q 录制切换）必须 ROOT 权限才能注册：
+
+```bash
+sudo /path/to/.venv/bin/python -m DaO.main --no-gui
+```
+
+**4. 硬件视频编码器**
+
+默认 `config.json` 中的 `hw_encoder` 为 `h264_qsv`（Intel QSV，Windows 首选）。Linux 下可改为 `h264_vaapi`：
+
+```json
+"hw_encoder": "h264_vaapi"
+```
+
+如果硬件编码不可用，可将 `video_backend` 改为 `"opencv"` 使用 CPU 软件编码（mp4v）。
 
 ### 界面与操作
 

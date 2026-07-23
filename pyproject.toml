@@ -1,13 +1,14 @@
 [project]
 name = "egodao"
-version = "0.2.1"
+version = "0.2.3"
 description = "Ego Daq-O — Ego 数据采集与实时处理系统"
 requires-python = ">=3.12,<3.13"
 dependencies = [
     "depthai>=3.0",
     "mediapipe>=0.10",
     "numpy>=1.24",
-    "opencv-python>=4.8",
+    "opencv-python-headless>=4.8",
+    "keyboard>=0.13",
 ]
 
 [project.optional-dependencies]
