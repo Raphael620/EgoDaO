@@ -124,13 +124,21 @@ def _run_headless(config):
     from DaO.core.recorder import DataRecorder
     from DaO.core.humanego_recorder import HumanEgoRecorder
 
-    # ── create camera pipeline directly (no Qt signals) ──
+    # ── shared state ──
     raw_rec = [None]
     he_rec = [None]
     frame_count = [0]
     q = queue.Queue(maxsize=500)
+    _camera_running = [False]  # whether camera pipeline is active
+    _cam_thread = [None]
 
-    # Camera thread: polls OAK devices, calls callbacks directly
+    # ── camera loop: connect → record → stop → disconnect ──
+    def _start_camera():
+        """Launch camera thread. Called on first Ctrl+Q (idle → recording)."""
+        stop_event.clear()
+        _cam_thread[0] = threading.Thread(target=_camera_loop, daemon=True)
+        _cam_thread[0].start()
+
     def _camera_loop():
         try:
             import depthai as dai
@@ -155,7 +163,9 @@ def _run_headless(config):
                     pass
 
             pip.start()
+            _camera_running[0] = True
             q.put(("started", None))
+            _logger.info("Headless: camera connected, starting recording")
 
             fc = 0
             fps_fc = 0
@@ -225,9 +235,12 @@ def _run_headless(config):
             device.close()
             if hand_tracker:
                 hand_tracker.close()
+            _camera_running[0] = False
             q.put(("stopped", None))
+            _logger.info("Headless: camera disconnected")
         except Exception as e:
-            q.put(("error", str(e) + "\n" + traceback.format_exc()))
+            _logger.error("Headless: camera error: %s\n%s", e, traceback.format_exc())
+            q.put(("error", str(e)))
     stop_event = threading.Event()
 
     # ── record toggle ──
@@ -301,13 +314,10 @@ def _run_headless(config):
                 break
         sock.close()
 
-    cam_thread = threading.Thread(target=_camera_loop, daemon=True)
-    cam_thread.start()
+    # Do NOT auto-start camera — wait for Ctrl+Q hotkey
 
     cmd_thread = threading.Thread(target=_cmd_listener, daemon=True)
     cmd_thread.start()
-
-    # Do NOT auto-start — wait for Ctrl+Q hotkey
 
     # ── graceful shutdown on SIGTERM / Ctrl+C / taskkill ──
     import signal as _signal
@@ -320,23 +330,28 @@ def _run_headless(config):
         except (ValueError, OSError):
             pass  # not available in sub-interpreter or on Windows
 
-    # ── global hotkey (Ctrl+Q) ──
+    # ── global hotkey (Ctrl+Q): idle↔recording toggle ──
     try:
         import keyboard
         def _hotkey_cb():
             if raw_rec[0] is not None:
+                # recording → stop recording, disconnect device
+                _logger.info("Headless: Ctrl+Q — stopping recording")
                 _toggle_record_off()
+                stop_event.set()
             else:
-                _toggle_record_on()
+                # idle → connect device, start recording
+                _logger.info("Headless: Ctrl+Q — connecting device")
+                _start_camera()
         keyboard.add_hotkey("ctrl+q", _hotkey_cb, suppress=False)
         _logger.info("Headless: Ctrl+Q hotkey registered")
     except Exception as e:
         _logger.warning("Headless: hotkey registration failed: %s", e)
 
     # ── main event loop ──
-    _logger.info("Headless: running (Ctrl+Q to toggle recording, Ctrl+C in terminal to exit)")
+    _logger.info("Headless: idle (waiting for Ctrl+Q to connect device)")
     try:
-        while not stop_event.is_set():
+        while True:
             try:
                 msg = q.get(timeout=0.5)
             except queue.Empty:
@@ -345,10 +360,12 @@ def _run_headless(config):
             mtype, mdata = msg
             if mtype == "error":
                 _logger.error("Headless: %s", mdata)
-                stop_event.set()
+                break
             elif mtype == "stopped":
-                _logger.info("Headless: pipeline stopped")
-                stop_event.set()
+                _logger.info("Headless: idle (waiting for Ctrl+Q)")
+                _toggle_record_off()  # safety cleanup
+                # re-enable hotkey for next cycle
+                continue
             elif mtype == "frame":
                 role, bgr = mdata
                 frame_count[0] += 1
@@ -398,7 +415,8 @@ def _run_headless(config):
     finally:
         stop_event.set()
         _toggle_record_off()
-        cam_thread.join(timeout=5.0)
+        if _cam_thread[0] and _cam_thread[0].is_alive():
+            _cam_thread[0].join(timeout=5.0)
         time.sleep(1.0)  # let OS flush disk buffers
         _logger.info("Headless: done")
 

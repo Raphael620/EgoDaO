@@ -99,6 +99,8 @@ sudo /path/to/.venv/bin/python -m DaO.main --no-gui
 
 预编译 deb 包会在安装时尝试 `setcap cap_sys_rawio+ep` 来解除此限制，如果不生效仍需 sudo。
 
+> **注意**：Headless 模式下 Ctrl+Q 的语义是「连接设备并开始采集」和「停止采集并断开设备」。启动后软件处于 idle 状态（设备未连接），按 Ctrl+Q 开始录制，再次按 Ctrl+Q 结束并回到 idle，可反复操作。
+
 **4. OAK Camera 设备权限（若相机无法识别）**
 
 ```bash
@@ -124,6 +126,22 @@ sudo udevadm trigger
 
 - **方式一**：修改 `config.json`，将 `recording.enable_humanego` 设为 `true`
 - **方式二**：录制完成后，在 GUI 中点击「转换」按钮，手动将 Raw 数据转换为 HumanEgo 格式
+
+---
+
+### Windows 开机启动（Headless 模式）
+
+> 无显示器、无人值守场景应使用 headless 模式（`--no-gui`）。GUI 模式需要桌面环境和 Qt 窗口系统，不适用于无头部署。
+
+1. 将 `start_no_gui.bat` 创建快捷方式
+2. 按 `Win+R`，输入 `shell:startup`，将快捷方式放入该文件夹
+3. 重启后软件自动以最小化命令行窗口后台运行
+
+运行时控制：
+- `Ctrl+Q`：开始 / 停止采集（循环切换，先将设备连接→开始录制，再次按下停止录制→断开设备）
+- 关闭：任务管理器中结束 `EgoDaO.exe` 进程（软件会处理信号安全保存数据）
+
+---
 
 ### 界面与操作
 

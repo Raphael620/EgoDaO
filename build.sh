@@ -21,6 +21,7 @@ NUIKKA_ARGS=(
   --include-data-dir="$PROJECT_DIR/DaO/=DaO/"
   --include-package=DaO
   --assume-yes-for-downloads
+  --nofollow-import-to=torch
   --output-dir="$PROJECT_DIR/dist"
 )
 

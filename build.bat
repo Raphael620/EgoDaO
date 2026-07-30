@@ -18,6 +18,7 @@ echo === Building with Nuitka ===
   --include-data-files="%MEDIAPIPE_DLL%=mediapipe/tasks/c/libmediapipe.dll" ^
   --include-package=DaO ^
   --assume-yes-for-downloads ^
+  --nofollow-import-to=torch ^
   --output-filename=EgoDaO ^
   --output-dir="%PROJECT_DIR%dist" ^
   "%PROJECT_DIR%DaO\main.py"
