@@ -11,7 +11,8 @@ MEDIAPIPE_LIB_DIR="$VENV_DIR/lib/python3.12/site-packages/mediapipe/tasks/c"
 MEDIAPIPE_SO=$(ls "$MEDIAPIPE_LIB_DIR"/libmediapipe*.so 2>/dev/null | head -1 || echo "")
 
 echo "=== Cleaning old dist ==="
-rm -rf "$PROJECT_DIR/dist/EgoDaO.build" "$PROJECT_DIR/dist/EgoDaO.dist"
+rm -rf "$PROJECT_DIR/dist/EgoDaO.build" "$PROJECT_DIR/dist/EgoDaO.dist" \
+       "$PROJECT_DIR/dist/main.build" "$PROJECT_DIR/dist/main.dist"
 
 echo "=== Building with Nuitka ==="
 NUIKKA_ARGS=(
@@ -33,6 +34,13 @@ else
 fi
 
 "$VENV_PYTHON" -m nuitka "${NUIKKA_ARGS[@]}" "$PROJECT_DIR/DaO/main.py"
+
+if [ -d "$PROJECT_DIR/dist/main.build" ]; then
+  mv "$PROJECT_DIR/dist/main.build" "$PROJECT_DIR/dist/EgoDaO.build"
+fi
+if [ -d "$PROJECT_DIR/dist/main.dist" ]; then
+  mv "$PROJECT_DIR/dist/main.dist" "$PROJECT_DIR/dist/EgoDaO.dist"
+fi
 
 echo
 echo "=== Copying config.json ==="
