@@ -25,6 +25,7 @@ from __future__ import annotations
 import json
 import os
 import threading
+import time
 from datetime import datetime
 from DaO.core.data_formats import (default_intrinsics, compute_slam_frames,
                                     rotmat_to_rpy_zyx_deg, pack_hand, build_training_data)
@@ -95,7 +96,7 @@ class HumanEgoRecorder:
         self._hand_data_humanego: list[list[dict]] = []
         # Backup: if mp4 source is not available, store frames here.
         # Bounded to _MAX_BACKUP_FRAMES to prevent OOM.
-        self._frame_backup: list[np.ndarray] = []
+        self._frame_backup: list[tuple[int, np.ndarray]] = []
         self._K: np.ndarray | None = None
         self._fov = self._DEFAULT_FOV_DEG
         self._w, self._h = 1280, 800
@@ -106,6 +107,9 @@ class HumanEgoRecorder:
         self._io_queue = None
         self._io_thread = None
         self._mp4_source: str | None = None
+        self._fallback_writer = None
+        self._fallback_mp4: str | None = None
+        self._flush_thread: threading.Thread | None = None
 
     @property
     def is_recording(self) -> bool:
@@ -137,12 +141,19 @@ class HumanEgoRecorder:
         self._latest_hands = None
         self._latest_hands_he = None
         self._mp4_source = None
+        self._fallback_writer = None
+        self._fallback_mp4 = None
         return self._session_dir
 
     def stop(self):
         if not self._active:
             return
         self._active = False
+        if self._fallback_writer is not None:
+            self._fallback_writer.close()
+            self._fallback_writer = None
+            if self._mp4_source is None:
+                self._mp4_source = self._fallback_mp4
         total = self._frame_idx
 
         if total == 0:
@@ -174,6 +185,7 @@ class HumanEgoRecorder:
             "hand_data_humanego": self._hand_data_humanego,
             "mp4_source": self._mp4_source,
             "frame_backup": self._frame_backup,
+            "delete_mp4_source": self._mp4_source == self._fallback_mp4,
         }
 
         self._vio_frames = []
@@ -186,9 +198,14 @@ class HumanEgoRecorder:
         self._latest_hands = None
         self._latest_hands_he = None
 
-        t = threading.Thread(target=_flush_worker,
-                             args=(payload,), daemon=True)
-        t.start()
+        self._flush_thread = threading.Thread(
+            target=_flush_worker,
+            args=(payload,),
+            name="egodao-humanego-flush",
+            # Data conversion must survive GUI/process shutdown.
+            daemon=False,
+        )
+        self._flush_thread.start()
 
     def set_camera_intrinsics(self, K: np.ndarray):
         self._K = np.asarray(K, dtype=np.float64)
@@ -197,23 +214,54 @@ class HumanEgoRecorder:
         """Tell the recorder where the center-camera mp4 is for frame extraction."""
         self._mp4_source = center_mp4_path
 
+    def wait_for_flush(self, timeout: float | None = None) -> bool:
+        """Wait for background conversion; return True when it has finished."""
+        if self._flush_thread is None:
+            return True
+        self._flush_thread.join(timeout)
+        return not self._flush_thread.is_alive()
+
     # ── data ingestion (called from UI signal handlers) ────────────
 
-    def write_frame_rgb(self, bgr: np.ndarray, timestamp_us: int = 0):
+    def write_frame_rgb(self, bgr: np.ndarray,
+                        timestamp_us: int | None = None):
         if not self._active:
             return
-        if bgr is not None and bgr.size == 0:
+        if bgr is None or bgr.size == 0:
             return
 
-        # Store up to 90 backup frames (3 seconds) as safety net if mp4
-        # source is unavailable at stop() time.  Oldest frames are dropped.
-        # This is ~270 MB max, FAR less than the previous unbounded growth.
-        if self._mp4_source is None:
-            self._frame_backup.append(bgr.copy())
-            if len(self._frame_backup) > 90:
-                self._frame_backup.pop(0)  # only keep last 3 seconds
+        h, w = bgr.shape[:2]
+        self._w, self._h = w, h
 
-        self._timestamps_us.append(timestamp_us)
+        # Raw recording is the preferred source.  In HumanEgo-only mode,
+        # create a compact temporary MP4 instead of retaining an unbounded
+        # list of full-resolution frames in RAM.
+        if self._mp4_source is None and self._fallback_mp4 is None:
+            from DaO.core.recorder import _create_writer
+            self._fallback_mp4 = str(
+                self._session_dir.parent / "_center_source.mp4")
+            self._fallback_writer = _create_writer(
+                self._fallback_mp4,
+                self._cfg.recording.video_backend,
+                self._cfg.recording.video_codec,
+                self._fps, w, h,
+            )
+        if self._fallback_writer is not None:
+            try:
+                self._fallback_writer.write(bgr)
+            except Exception:
+                self._fallback_writer.close()
+                self._fallback_writer = None
+
+        # Keep an index-aware, bounded safety window.  If an encoder fails,
+        # fallback frames remain aligned with their original metadata index.
+        if self._mp4_source is None:
+            self._frame_backup.append((self._frame_idx, bgr.copy()))
+            if len(self._frame_backup) > 90:
+                self._frame_backup.pop(0)
+
+        self._timestamps_us.append(int(
+            timestamp_us or time.monotonic_ns() // 1000))
         if self._latest_vio is not None:
             self._vio_frames.append(self._latest_vio.copy())
         else:
@@ -271,6 +319,11 @@ def _flush_worker(payload: dict):
     hand_data_humanego = payload["hand_data_humanego"]
     mp4_src = payload.get("mp4_source")
     frame_backup = payload.get("frame_backup", [])
+    delete_mp4_source = payload.get("delete_mp4_source", False)
+    backup_by_idx = {
+        int(idx): frame for idx, frame in frame_backup
+        if frame is not None
+    }
 
     slam_frames = compute_slam_frames(vio_frames, timestamps_us)
 
@@ -305,8 +358,8 @@ def _flush_worker(payload: dict):
             ret, frm = cap.read()
             if ret:
                 frame = frm
-        if frame is None and idx < len(frame_backup):
-            frame = frame_backup[idx]
+        if frame is None:
+            frame = backup_by_idx.get(idx)
         if frame is not None:
             q.put({
                 "action": "write_png",
@@ -354,8 +407,8 @@ def _flush_worker(payload: dict):
             "data": {
                 "idx": idx,
                 "ts": int(timestamps_us[idx] * 1000) if idx < len(timestamps_us) and timestamps_us[idx] > 0 else 0,
-                "hand_l": pack_hand(he_left, fbl),
-                "hand_r": pack_hand(he_right, fbr),
+                "hand_l": pack_hand(fbl, he_left),
+                "hand_r": pack_hand(fbr, he_right),
             },
         })
 
@@ -370,4 +423,9 @@ def _flush_worker(payload: dict):
         cap.release()
 
     q.put(_STOP_SENTINEL)
-    worker.join(timeout=300)
+    worker.join()
+    if delete_mp4_source and mp4_src:
+        try:
+            os.remove(mp4_src)
+        except OSError:
+            pass

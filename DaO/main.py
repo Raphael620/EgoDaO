@@ -1,4 +1,4 @@
-"""Ego Daq-O V0.2.3.1 — Ego 数据采集与实时处理系统.
+"""Ego Daq-O — Ego 数据采集与实时处理系统.
 
 Usage:
   python -m DaO.main                     # GUI mode (default)
@@ -43,8 +43,12 @@ def _apply_config(cfg_obj, cfg: dict):
     for key in ("data_root", "raw_subdir", "humanego_subdir",
                 "video_codec", "video_backend", "hw_encoder"):
         if key in rec:
-            setattr(cfg_obj.recording, key,
-                    Path(rec[key]) if key == "data_root" else rec[key])
+            value = rec[key]
+            if key == "data_root":
+                value = Path(value).expanduser()
+                if not value.is_absolute():
+                    value = Path(_root) / value
+            setattr(cfg_obj.recording, key, value)
     for key in ("enable_raw", "enable_humanego", "disk_keep_days"):
         if key in rec:
             setattr(cfg_obj.recording, key, rec[key])
@@ -131,15 +135,22 @@ def _run_headless(config):
     q = queue.Queue(maxsize=500)
     _camera_running = [False]  # whether camera pipeline is active
     _cam_thread = [None]
+    camera_stop_event = threading.Event()
+    app_stop_event = threading.Event()
 
     # ── camera loop: connect → record → stop → disconnect ──
     def _start_camera():
         """Launch camera thread. Called on first Ctrl+Q (idle → recording)."""
-        stop_event.clear()
+        if _cam_thread[0] is not None and _cam_thread[0].is_alive():
+            return
+        camera_stop_event.clear()
         _cam_thread[0] = threading.Thread(target=_camera_loop, daemon=True)
         _cam_thread[0].start()
 
     def _camera_loop():
+        device = None
+        pip = None
+        hand_tracker = None
         try:
             import depthai as dai
             from DaO.core.pipeline import create_pipeline
@@ -154,7 +165,6 @@ def _run_headless(config):
             device = dai.Device(infos[0].getDeviceId())
             pip, cam_q, imu_q, vio_q = create_pipeline(device, config)
 
-            hand_tracker = None
             if config.enable_hand_tracking:
                 try:
                     K = _get_center_camera_intrinsics(device)
@@ -171,7 +181,7 @@ def _run_headless(config):
             fps_fc = 0
             fps_t0 = time.time()
 
-            while pip.isRunning() and not stop_event.is_set():
+            while pip.isRunning() and not camera_stop_event.is_set():
                 any_data = False
                 for role, cq in cam_q.items():
                     try:
@@ -192,7 +202,12 @@ def _run_headless(config):
 
                     if hand_tracker is not None and role == "center":
                         try:
-                            pix, heh = hand_tracker.process(bgr, apply_filter=True, compute_metric_3d=True)
+                            pix, heh = hand_tracker.process(
+                                bgr,
+                                apply_filter=True,
+                                compute_metric_3d=bool(
+                                    he_rec[0] and he_rec[0].is_recording),
+                            )
                             if pix:
                                 q.put(("hands", (role, pix)))
                             if heh:
@@ -202,9 +217,11 @@ def _run_headless(config):
 
                 if imu_q is not None:
                     try:
-                        pkt = imu_q.tryGet()
-                        if pkt is not None:
-                            readings = _decode_imu(pkt.packets)
+                        imu_packets = imu_q.tryGetAll()
+                        if imu_packets:
+                            readings = []
+                            for pkt in imu_packets:
+                                readings.extend(_decode_imu(pkt.packets))
                             if readings:
                                 q.put(("imu", readings))
                                 any_data = True
@@ -231,21 +248,33 @@ def _run_headless(config):
                 if not any_data:
                     time.sleep(0.005)
 
-            pip.stop()
-            device.close()
-            if hand_tracker:
-                hand_tracker.close()
-            _camera_running[0] = False
-            q.put(("stopped", None))
-            _logger.info("Headless: camera disconnected")
         except Exception as e:
             _logger.error("Headless: camera error: %s\n%s", e, traceback.format_exc())
             q.put(("error", str(e)))
-    stop_event = threading.Event()
+        finally:
+            if pip is not None:
+                try:
+                    if pip.isRunning():
+                        pip.stop()
+                except Exception:
+                    pass
+            if device is not None:
+                try:
+                    device.close()
+                except Exception:
+                    pass
+            if hand_tracker is not None:
+                try:
+                    hand_tracker.close()
+                except Exception:
+                    pass
+            _camera_running[0] = False
+            q.put(("stopped", None))
+            _logger.info("Headless: camera disconnected")
 
     # ── record toggle ──
     def _toggle_record_on():
-        if raw_rec[0] is not None:
+        if raw_rec[0] is not None or he_rec[0] is not None:
             return
         if config.recording.enable_raw:
             r = DataRecorder(config)
@@ -255,32 +284,37 @@ def _run_headless(config):
         if config.recording.enable_humanego:
             r2 = HumanEgoRecorder(config)
             r2.start()
+            if raw_rec[0] is not None and raw_rec[0]._session_dir:
+                r2.set_mp4_source(str(
+                    raw_rec[0]._session_dir / "center_cam.mp4"))
             he_rec[0] = r2
             _logger.info("Headless: HumanEgo recording started")
 
     def _toggle_record_off():
+        center_mp4 = None
+        raw = raw_rec[0]
         try:
-            if he_rec[0]:
-                center_mp4 = None
-                if raw_rec[0] and hasattr(raw_rec[0], '_session_dir') and raw_rec[0]._session_dir:
-                    center_mp4 = str(raw_rec[0]._session_dir / "center_cam.mp4")
-                if center_mp4:
-                    try:
-                        he_rec[0].set_mp4_source(center_mp4)
-                    except Exception:
-                        pass
-                he_rec[0].stop()
-                he_rec[0] = None
-                _logger.info("Headless: HumanEgo recording saved")
-        except Exception as e:
-            _logger.error("Headless: HE stop failed: %s", e)
-        try:
-            if raw_rec[0]:
-                raw_rec[0].stop()
-                raw_rec[0] = None
+            if raw is not None:
+                if raw._session_dir:
+                    center_mp4 = str(raw._session_dir / "center_cam.mp4")
+                raw.stop()
                 _logger.info("Headless: raw recording saved")
         except Exception as e:
             _logger.error("Headless: raw stop failed: %s", e)
+        finally:
+            raw_rec[0] = None
+
+        humanego = he_rec[0]
+        try:
+            if humanego is not None:
+                if center_mp4:
+                    humanego.set_mp4_source(center_mp4)
+                humanego.stop()
+                _logger.info("Headless: HumanEgo recording saved")
+        except Exception as e:
+            _logger.error("Headless: HE stop failed: %s", e)
+        finally:
+            he_rec[0] = None
 
     # ── socket command listener ──
     def _cmd_listener():
@@ -296,16 +330,17 @@ def _run_headless(config):
             sock.close()
             return
         _logger.info("Headless: cmd socket on 127.0.0.1:9876")
-        while not stop_event.is_set():
+        while not app_stop_event.is_set():
             try:
                 conn, _ = sock.accept()
                 data = conn.recv(1024).decode().strip().lower()
                 if data == "start":
-                    q.put(("toggle_rec", "on"))
+                    q.put(("control", "start"))
                 elif data == "stop":
-                    q.put(("toggle_rec", "off"))
+                    q.put(("control", "stop"))
                 elif data == "quit":
-                    stop_event.set()
+                    app_stop_event.set()
+                    camera_stop_event.set()
                 conn.sendall(b"ok\n")
                 conn.close()
             except socket.timeout:
@@ -322,8 +357,8 @@ def _run_headless(config):
     # ── graceful shutdown on SIGTERM / Ctrl+C / taskkill ──
     import signal as _signal
     def _graceful(signum, frame):
-        if not stop_event.is_set():
-            stop_event.set()
+        app_stop_event.set()
+        camera_stop_event.set()
     for sig in (_signal.SIGTERM, _signal.SIGINT):
         try:
             _signal.signal(sig, _graceful)
@@ -334,15 +369,11 @@ def _run_headless(config):
     try:
         import keyboard
         def _hotkey_cb():
-            if raw_rec[0] is not None:
-                # recording → stop recording, disconnect device
-                _logger.info("Headless: Ctrl+Q — stopping recording")
-                _toggle_record_off()
-                stop_event.set()
-            else:
-                # idle → connect device, start recording
-                _logger.info("Headless: Ctrl+Q — connecting device")
-                _start_camera()
+            running = bool(
+                _camera_running[0]
+                or (_cam_thread[0] is not None and _cam_thread[0].is_alive())
+            )
+            q.put(("control", "stop" if running else "start"))
         keyboard.add_hotkey("ctrl+q", _hotkey_cb, suppress=False)
         _logger.info("Headless: Ctrl+Q hotkey registered")
     except Exception as e:
@@ -351,7 +382,7 @@ def _run_headless(config):
     # ── main event loop ──
     _logger.info("Headless: idle (waiting for Ctrl+Q to connect device)")
     try:
-        while True:
+        while not app_stop_event.is_set():
             try:
                 msg = q.get(timeout=0.5)
             except queue.Empty:
@@ -361,6 +392,8 @@ def _run_headless(config):
             if mtype == "error":
                 _logger.error("Headless: %s", mdata)
                 break
+            elif mtype == "started":
+                _toggle_record_on()
             elif mtype == "stopped":
                 _logger.info("Headless: idle (waiting for Ctrl+Q)")
                 _toggle_record_off()  # safety cleanup
@@ -374,7 +407,7 @@ def _run_headless(config):
                     r.write_frame(role, bgr)
                 h = he_rec[0]
                 if h is not None and h.is_recording and role == "center":
-                    h.write_frame_rgb(bgr, frame_count[0])
+                    h.write_frame_rgb(bgr)
             elif mtype == "hands":
                 role, hands = mdata
                 r = raw_rec[0]
@@ -405,15 +438,19 @@ def _run_headless(config):
             elif mtype == "stats":
                 if frame_count[0] % 150 == 0:
                     _logger.debug("FPS=%.1f", mdata.get("fps", 0))
-            elif mtype == "toggle_rec":
-                if mdata == "on":
-                    _toggle_record_on()
+            elif mtype == "control":
+                if mdata == "start":
+                    _logger.info("Headless: connecting device")
+                    _start_camera()
                 else:
+                    _logger.info("Headless: stopping recording")
                     _toggle_record_off()
+                    camera_stop_event.set()
     except KeyboardInterrupt:
         _logger.info("Headless: interrupted")
     finally:
-        stop_event.set()
+        app_stop_event.set()
+        camera_stop_event.set()
         _toggle_record_off()
         if _cam_thread[0] and _cam_thread[0].is_alive():
             _cam_thread[0].join(timeout=5.0)
@@ -429,12 +466,15 @@ def main():
     _logger = setup_logging()
 
     cfg = _load_config()
-    from DaO.config import AppConfig
+    from DaO.config import APP_NAME, APP_VERSION, AppConfig
     app_config = AppConfig()
     if cfg:
         _apply_config(app_config, cfg)
 
-    _logger.info(f"EgoDaO starting (data_root={app_config.recording.data_root})")
+    _logger.info(
+        "%s V%s starting (data_root=%s)",
+        APP_NAME, APP_VERSION, app_config.recording.data_root,
+    )
 
     # Auto-clean old data
     _cleanup_old_data(app_config)
@@ -451,8 +491,8 @@ def main():
         Qt.HighDpiScaleFactorRoundingPolicy.PassThrough)
 
     app = QApplication(sys.argv)
-    app.setApplicationName("Ego Daq-O")
-    app.setApplicationVersion("0.2.1")
+    app.setApplicationName(APP_NAME)
+    app.setApplicationVersion(APP_VERSION)
 
     from DaO.ui.main_window import MainWindow
     window = MainWindow(app_config)

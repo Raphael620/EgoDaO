@@ -4,6 +4,7 @@ __pycache__/
 
 # personal
 todo.md
+docs/
 
 # Virtual environment
 .venv/
@@ -42,6 +43,8 @@ test/
 
 # Nuitka build output
 dist/
+build/
+*.egg-info/
 
 # Local-only build script (machine-specific paths)
 build-here.bat

@@ -1,1 +1,3 @@
-from .config import AppConfig, CameraConfig, ImuConfig, RecordingConfig
+from .config import (
+    APP_NAME, APP_VERSION, AppConfig, CameraConfig, ImuConfig, RecordingConfig,
+)

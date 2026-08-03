@@ -1,6 +1,7 @@
 # Ego Daq-O — Ego 数据采集与实时处理系统
 
-> **Version 0.2.3.1** | 具身智能 Ego 数据采集软件
+> 具身智能 Ego 数据采集软件。应用名与当前版本以
+> `DaO/config/config.py` 中的 `APP_NAME` / `APP_VERSION` 为唯一来源。
 
 [English](#english) | 中文
 
@@ -81,7 +82,7 @@ sudo apt install libxcb-cursor0 libxcb-shape0 libxcb-xfixes0 libxcb-render-util0
     libxcb-icccm4 libxcb-xkb1
 ```
 
-**2. keyboard 包（Headless 热键）**
+**2. Headless 控制**
 
 `keyboard` 包用于 headless 模式的全局热键（Ctrl+Q 录制切换），已在 `pyproject.toml` 的默认依赖中。如需源码安装：
 
@@ -89,9 +90,17 @@ sudo apt install libxcb-cursor0 libxcb-shape0 libxcb-xfixes0 libxcb-render-util0
 pip install keyboard
 ```
 
-**3. Headless 模式需要 ROOT 权限**
+程序同时监听本机 TCP `127.0.0.1:9876`：
 
-Linux 下 `keyboard` 库需要读取 `/dev/input/` 来注册全局系统热键，这要求 root 权限。**这是 keyboard 库的 Linux 限制，与 OAK camera 无关**（OAK 通过 USB 访问，配置 udev rules 后不需要 root）。
+| 命令 | 作用 |
+|------|------|
+| `start` | 连接相机并开始录制 |
+| `stop` | 停止录制并断开相机 |
+| `quit` | 保存数据并退出进程 |
+
+**3. Linux 全局热键权限**
+
+Linux 下 `keyboard` 库需要读取 `/dev/input/` 来注册全局系统热键，通常要求 root 权限。**这是 keyboard 库的 Linux 限制，与 OAK camera 无关**（OAK 通过 USB 访问，配置 udev rules 后不需要 root）。不使用热键时可通过上述本机 TCP 接口控制。
 
 ```bash
 sudo /path/to/.venv/bin/python -m DaO.main --no-gui
@@ -139,7 +148,8 @@ sudo udevadm trigger
 
 运行时控制：
 - `Ctrl+Q`：开始 / 停止采集（循环切换，先将设备连接→开始录制，再次按下停止录制→断开设备）
-- 关闭：任务管理器中结束 `EgoDaO.exe` 进程（软件会处理信号安全保存数据）
+- `127.0.0.1:9876`：发送 `start` / `stop` / `quit`
+- 关闭：优先发送 `quit` 或 Ctrl+C，以便完整保存数据
 
 ---
 
@@ -148,7 +158,7 @@ sudo udevadm trigger
 | 区域 | 内容 |
 |------|------|
 | 工具栏 | 「采集」连接/断开 OAK 相机；「录制」开始/停止数据记录 |
-| 中部 | 三目相机实时画面（左目 / 主视角 / 右目），左右目带手部骨架叠加 |
+| 中部 | 三目相机实时画面（左目 / 主视角 / 右目），主视角显示手部骨架 |
 | 底部左侧 | IMU 条形图（加速度计 G + 陀螺仪 dps），含互补滤波姿态估计 |
 | 底部中 | IMU 3D 姿态可视化 |
 | 底部右 | VIO 3D 空间定位轨迹 |
@@ -162,8 +172,8 @@ sudo udevadm trigger
 |------|------|
 | `left_cam.mp4` / `center_cam.mp4` / `right_cam.mp4` | 三目相机视频 |
 | `imu.csv` | IMU 加速度计 & 陀螺仪原始数据 |
-| `hands.json` | 手部 21 关键点检测结果 |
-| `vio.json` | VIO 位姿矩阵 (4×4) |
+| `hands.jsonl` | 手部 21 关键点检测结果 |
+| `vio.jsonl` | VIO 位姿矩阵 (4×4) |
 
 #### HumanEgo 兼容数据 (`Data/HumanEgo/mps_<时间戳>_vrs/preprocess/all_data/`)
 
@@ -200,13 +210,13 @@ EgoDaO/
 ├── pyproject.toml
 ├── run.bat / run.sh            # 一键启动脚本
 ├── README.md
-├── PROGRESS.md
-└── TODO.md
+├── progress.md
+└── todo.md
 ```
 
 ### 开发进度
 
-详见 [PROGRESS.md](./PROGRESS.md) 和 [TODO.md](./TODO.md)
+详见 [progress.md](./progress.md)。
 
 ---
 
@@ -230,7 +240,7 @@ Or use the launcher script: `run.bat` (Windows) / `run.sh` (Linux/macOS).
 
 ### Key Features
 
-- **3-camera real-time feed** with hand skeleton overlay on left/right views
+- **3-camera real-time feed** with hand skeleton overlay on the center view
 - **IMU visualization** — accelerometer & gyroscope bar gauges + 3D attitude
 - **VIO 3D trajectory** — real-time spatial positioning
 - **Dual recording format** — raw data (.mp4 + .csv + .json) and HumanEgo-compatible format

@@ -90,6 +90,7 @@ class ImuPanel(QWidget):
         self._gyro_bias = np.zeros(3, dtype=np.float64)
         self._bias_samples = 0
         self._bias_locked = False
+        self._last_timestamp_us: int | None = None
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(6, 6, 6, 6)
@@ -142,17 +143,15 @@ class ImuPanel(QWidget):
         if not readings:
             return
 
-        # Estimate dt from the batch
-        n = len(readings)
-        if n >= 2:
-            dt = (readings[-1]["t_us"] - readings[0]["t_us"]) / (n - 1) / 1_000_000
-        else:
-            dt = 1.0 / 400.0
-        dt = max(dt, 1e-6)
-
         for r in readings:
             acc = r.get("acc_g", [0, 0, 0])
             gyr_dps = r.get("gyro_dps", [0, 0, 0])
+            timestamp_us = int(r.get("t_us", 0))
+            dt = 1.0 / 200.0
+            if self._last_timestamp_us is not None and timestamp_us > self._last_timestamp_us:
+                dt = (timestamp_us - self._last_timestamp_us) / 1_000_000.0
+            self._last_timestamp_us = timestamp_us
+            dt = min(max(dt, 1e-5), 0.1)
 
             # Gyro bias calibration (first ~2 s)
             if not self._bias_locked:
@@ -172,6 +171,8 @@ class ImuPanel(QWidget):
 
             sp = math.sin(self._pitch)
             cp = math.cos(self._pitch)
+            if abs(cp) < 1e-4:
+                cp = math.copysign(1e-4, cp)
             sr = math.sin(self._roll)
             cr = math.cos(self._roll)
 
@@ -181,9 +182,7 @@ class ImuPanel(QWidget):
             self._yaw += dt * (gy * sr / cp + gz * cr / cp)
 
             # Accel correction (low-pass)
-            ax_norm = acc[0] / 1000.0
-            ay_norm = acc[1] / 1000.0
-            az_norm = acc[2] / 1000.0
+            ax_norm, ay_norm, az_norm = acc
             accel_roll = math.atan2(ay_norm, az_norm)
             accel_pitch = math.atan2(-ax_norm, math.sqrt(ay_norm * ay_norm + az_norm * az_norm))
             alpha = 0.02

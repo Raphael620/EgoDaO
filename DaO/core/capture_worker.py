@@ -148,11 +148,13 @@ class CaptureWorker(QObject):
 
                 if imu_q is not None:
                     try:
-                        imu_pkt = imu_q.tryGet()
+                        imu_packets = imu_q.tryGetAll()
                     except Exception:
-                        imu_pkt = None
-                    if imu_pkt is not None:
-                        readings = _decode_imu(imu_pkt.packets)
+                        imu_packets = []
+                    if imu_packets:
+                        readings = []
+                        for imu_pkt in imu_packets:
+                            readings.extend(_decode_imu(imu_pkt.packets))
                         if readings:
                             self.imu_ready.emit(readings)
                             any_data = True
@@ -170,7 +172,8 @@ class CaptureWorker(QObject):
 
                 elapsed = time.perf_counter() - fps_t0
                 if elapsed >= 1.0:
-                    # fps_fc counts camera frames only (3 cameras × 30 fps = 90)
+                    # Count only center-camera frames, so the displayed FPS is
+                    # the per-camera rate (30 means each stream targets 30).
                     self.pipeline_stats.emit({
                         "fps": fps_fc / elapsed,
                         "frames": fc,

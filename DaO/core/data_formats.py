@@ -32,17 +32,22 @@ def compute_slam_frames(transforms: list[np.ndarray], timestamps_us: list[int]):
     t_world = np.array([m[:3, 3] for m in transforms], dtype=np.float64)
     rpy_deg = np.array([rotmat_to_rpy_zyx_deg(m[:3, :3]) for m in transforms], dtype=np.float64)
     delta_t = t_world - t_world[0]
-    delta_rpy = rpy_deg - rpy_deg[0]
+    # Euler angles wrap at +/-180 degrees.  Unwrap each axis before computing
+    # session-relative deltas so a 179 -> -179 transition is reported as 2°.
+    rpy_unwrapped_deg = np.degrees(
+        np.unwrap(np.radians(rpy_deg), axis=0)
+    )
+    delta_rpy = rpy_unwrapped_deg - rpy_unwrapped_deg[0]
     yaws = np.unwrap(np.radians(rpy_deg[:, 2]))
     n_ts = len(timestamps_us)
     frames = []
     for i in range(n):
         ts_ns = int(timestamps_us[i] * 1000) if i < n_ts else 0
-        if i > 0 and i < n_ts and (i - 1) < n_ts:
-            dt_us = max(timestamps_us[i] - timestamps_us[i - 1], 1)
-            dt = dt_us / 1e6
-        else:
-            dt = 1.0 / 30.0
+        dt = 1.0 / 30.0
+        if i > 0 and i < n_ts:
+            dt_us = timestamps_us[i] - timestamps_us[i - 1]
+            if dt_us > 0:
+                dt = dt_us / 1e6
         v = float(np.linalg.norm(t_world[i] - t_world[i - 1]) / max(dt, 1e-6)) if i > 0 else 0.0
         w = float(abs(yaws[i] - yaws[i - 1]) / max(dt, 1e-6)) if i > 0 else 0.0
         frames.append({
@@ -64,14 +69,33 @@ def pack_hand(entries, he_entries=None):
     returns the first entry directly.  Otherwise falls back to raw landmarks.
     """
     if he_entries:
-        for _label, he_dict in he_entries:
-            return he_dict
+        for item in he_entries:
+            if (isinstance(item, (list, tuple)) and len(item) == 2
+                    and isinstance(item[1], dict)):
+                return item[1]
     if not entries:
         return None
-    for _label, lms in entries:
-        lms_np = np.asarray(lms, dtype=np.float64)
-        if lms_np.shape[0] < 21:
+
+    # Accept both tracker-style [(label, landmarks)] and a plain (21, N)
+    # landmark array.  Older Raw recordings store the latter.
+    try:
+        arr = np.asarray(entries)
+    except (TypeError, ValueError):
+        arr = np.empty((0, 0))
+    if arr.ndim == 2 and arr.shape[0] >= 21 and np.issubdtype(arr.dtype, np.number):
+        candidates = [("", arr)]
+    else:
+        candidates = entries
+
+    for item in candidates:
+        if not isinstance(item, (list, tuple)) or len(item) != 2:
             continue
+        _label, lms = item
+        lms_np = np.asarray(lms, dtype=np.float64)
+        if lms_np.ndim != 2 or lms_np.shape[0] < 21 or lms_np.shape[1] < 2:
+            continue
+        if lms_np.shape[1] == 2:
+            lms_np = np.column_stack((lms_np, np.zeros(len(lms_np))))
         wrist = lms_np[0].copy()
         pose = np.eye(4)
         pose[:3, 3] = wrist

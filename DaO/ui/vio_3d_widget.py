@@ -5,8 +5,8 @@ import math
 from collections import deque
 
 import numpy as np
-from PySide6.QtCore import Qt
-from PySide6.QtGui import QColor, QFont, QPainter, QPen
+from PySide6.QtCore import QPointF, Qt, QTimer
+from PySide6.QtGui import QColor, QFont, QPainter, QPen, QPolygonF
 from PySide6.QtWidgets import QWidget
 
 
@@ -23,6 +23,11 @@ class Vio3DWidget(QWidget):
         self._view_az = 45.0
         self._view_el = 25.0
         self._auto_scale = 2.0  # dynamic scale, starts at 2m view
+        self._pose_updates = 0
+        self._repaint_timer = QTimer(self)
+        self._repaint_timer.setSingleShot(True)
+        self._repaint_timer.setTimerType(Qt.TimerType.CoarseTimer)
+        self._repaint_timer.timeout.connect(self.update)
         self.setStyleSheet("background-color: #0e0e14;")
 
     def update_pose(self, transform: np.ndarray):
@@ -31,9 +36,10 @@ class Vio3DWidget(QWidget):
         self._trail_y.append(float(pos[1]))
         self._trail_z.append(float(pos[2]))
         self._latest_pos = pos
+        self._pose_updates += 1
 
         # Dynamic auto-scaling
-        if len(self._trail_x) > 50:
+        if len(self._trail_x) > 50 and self._pose_updates % 10 == 0:
             all_x = np.array(self._trail_x)
             all_y = np.array(self._trail_y)
             all_z = np.array(self._trail_z)
@@ -45,7 +51,10 @@ class Vio3DWidget(QWidget):
             )
             self._auto_scale = span * 2.5
 
-        self.update()
+        # VIO may arrive faster than the screen needs to repaint.  Coalesce to
+        # at most 20 FPS while retaining every trajectory sample.
+        if not self._repaint_timer.isActive():
+            self._repaint_timer.start(50)
 
     def paintEvent(self, event):
         p = QPainter(self)
@@ -89,17 +98,16 @@ class Vio3DWidget(QWidget):
         if len(self._trail_x) > 1:
             pen = QPen(QColor(60, 200, 230, 220), 2.5, Qt.SolidLine, Qt.RoundCap)
             p.setPen(pen)
-            pts = []
+            pts = QPolygonF()
             for i in range(len(self._trail_x)):
                 pt = project(self._trail_x[i], self._trail_y[i], self._trail_z[i])
-                pts.append((int(pt[0]), int(pt[1])))
-            for i in range(len(pts) - 1):
-                p.drawLine(pts[i][0], pts[i][1], pts[i + 1][0], pts[i + 1][1])
+                pts.append(QPointF(float(pt[0]), float(pt[1])))
+            p.drawPolyline(pts)
 
             last_pt = pts[-1]
             p.setPen(Qt.NoPen)
             p.setBrush(QColor(255, 230, 50))
-            p.drawEllipse(last_pt[0] - 5, last_pt[1] - 5, 10, 10)
+            p.drawEllipse(int(last_pt.x()) - 5, int(last_pt.y()) - 5, 10, 10)
 
         # Position text
         p.setPen(QColor(150, 150, 170))

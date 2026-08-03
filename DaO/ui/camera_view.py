@@ -1,4 +1,4 @@
-"""Three-camera view widget — side-by-side display with hand skeleton overlay on left/right."""
+"""Three-camera view widget with a center-camera hand skeleton overlay."""
 from __future__ import annotations
 
 import numpy as np
@@ -65,6 +65,8 @@ class CameraPane(QFrame):
         self._dh = 0
         self._last_lbl_w = 0
         self._last_lbl_h = 0
+        self._last_frame_w = 0
+        self._last_frame_h = 0
 
         # Deferred render with generation token — prevents render-pileup
         self._gen = 0
@@ -97,9 +99,12 @@ class CameraPane(QFrame):
             return
 
         # Recompute scale only when label size changes
-        if lbl_w != self._last_lbl_w or lbl_h != self._last_lbl_h:
+        if (lbl_w != self._last_lbl_w or lbl_h != self._last_lbl_h
+                or w != self._last_frame_w or h != self._last_frame_h):
             self._last_lbl_w = lbl_w
             self._last_lbl_h = lbl_h
+            self._last_frame_w = w
+            self._last_frame_h = h
             self._scale = min(lbl_w / w, lbl_h / h)
             self._dw = int(w * self._scale)
             self._dh = int(h * self._scale)

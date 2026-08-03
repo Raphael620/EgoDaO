@@ -6,6 +6,7 @@ absolute 3D metric recovery in camera frame, and Aria MPS keypoint ordering.
 from __future__ import annotations
 
 import os
+import threading
 import urllib.request
 import numpy as np
 import cv2
@@ -15,6 +16,9 @@ _MODEL_URL = "https://storage.googleapis.com/mediapipe-models/hand_landmarker/ha
 
 # Average adult hand: wrist to middle MCP ≈ 0.085m
 _HAND_SIZE_WRIST_TO_MIDDLE_MCP_M = 0.085
+
+_MEDIAPIPE_TRACKER_CACHE = None
+_MEDIAPIPE_TRACKER_LOCK = threading.Lock()
 
 # ── MediaPipe 21-point → Aria MPS 21-point index mapping ──────────
 # MediaPipe: 0=Wrist, 1=ThumbCMC, 2=ThumbMCP, 3=ThumbIP, 4=ThumbTip,
@@ -241,7 +245,7 @@ class MediaPipeHandTracker:
         if len(bgr.shape) == 2 or bgr.shape[2] == 1:
             rgb = cv2.cvtColor(bgr, cv2.COLOR_GRAY2RGB)
         else:
-            rgb = np.ascontiguousarray(bgr[..., ::-1])
+            rgb = cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
         mp_img = self._mp.Image(image_format=self._mp.ImageFormat.SRGB, data=rgb)
 
         self._frame_timestamp_ms += 33  # ~30 FPS
@@ -387,7 +391,10 @@ class MediaPipeHandTracker:
         return kpts_cam.astype(np.float32)
 
     def close(self):
-        self._detector.close()
+        # MediaPipe 0.10.35 synchronously flushes Clearcut telemetry from
+        # detector.close().  On an offline machine that blocks for ~42 s.
+        # The factory keeps one process-wide detector for reconnects, so reset
+        # only the temporal state and let process teardown release the graph.
         if self._filter is not None:
             self._filter.reset()
 
@@ -450,8 +457,18 @@ def _compute_grasp_state(kpts_cam_aria: np.ndarray) -> int:
 
 def create_hand_tracker(backend="mediapipe", **kwargs):
     if backend == "mediapipe":
+        global _MEDIAPIPE_TRACKER_CACHE
         try:
-            return MediaPipeHandTracker(**kwargs)
+            with _MEDIAPIPE_TRACKER_LOCK:
+                if _MEDIAPIPE_TRACKER_CACHE is None:
+                    _MEDIAPIPE_TRACKER_CACHE = MediaPipeHandTracker(**kwargs)
+                else:
+                    K = kwargs.get("K")
+                    if K is not None:
+                        _MEDIAPIPE_TRACKER_CACHE.set_intrinsics(K)
+                    if _MEDIAPIPE_TRACKER_CACHE._filter is not None:
+                        _MEDIAPIPE_TRACKER_CACHE._filter.reset()
+                return _MEDIAPIPE_TRACKER_CACHE
         except ImportError:
             print("MediaPipe not installed — hand tracking disabled")
             return None

@@ -31,9 +31,18 @@ def setup_logging(name: str = "egodao") -> logging.Logger:
 
     logger = logging.getLogger(name)
     logger.setLevel(logging.DEBUG)
+    logger.propagate = False
+
+    # setup_logging() can be called more than once by tests or embedded entry
+    # points.  Replace only handlers created by this function.
+    for handler in list(logger.handlers):
+        if getattr(handler, "_egodao_handler", False):
+            logger.removeHandler(handler)
+            handler.close()
 
     # File handler — everything
     fh = logging.FileHandler(str(log_path), encoding="utf-8")
+    fh._egodao_handler = True
     fh.setLevel(logging.DEBUG)
     fh.setFormatter(logging.Formatter(
         "%(asctime)s [%(levelname)s] %(name)s: %(message)s",
@@ -42,6 +51,7 @@ def setup_logging(name: str = "egodao") -> logging.Logger:
 
     # Console handler — WARNING and above
     ch = logging.StreamHandler()
+    ch._egodao_handler = True
     ch.setLevel(logging.WARNING)
     ch.setFormatter(logging.Formatter("[%(levelname)s] %(message)s"))
     logger.addHandler(ch)

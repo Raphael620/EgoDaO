@@ -8,13 +8,15 @@ set "MEDIAPIPE_DLL=%VENV_DIR%\Lib\site-packages\mediapipe\tasks\c\libmediapipe.d
 echo === Cleaning old dist ===
 if exist "%PROJECT_DIR%dist\EgoDaO.build" rmdir /s /q "%PROJECT_DIR%dist\EgoDaO.build"
 if exist "%PROJECT_DIR%dist\EgoDaO.dist" rmdir /s /q "%PROJECT_DIR%dist\EgoDaO.dist"
+if exist "%PROJECT_DIR%dist\main.build" rmdir /s /q "%PROJECT_DIR%dist\main.build"
+if exist "%PROJECT_DIR%dist\main.dist" rmdir /s /q "%PROJECT_DIR%dist\main.dist"
 
 echo === Building with Nuitka ===
 "%VENV_PYTHON%" -m nuitka ^
   --standalone ^
   --enable-plugin=pyside6 ^
   --windows-icon-from-ico="%PROJECT_DIR%icon.ico" ^
-  --include-data-dir="%PROJECT_DIR%DaO\=DaO\" ^
+  --include-data-dir="%PROJECT_DIR%DaO=DaO" ^
   --include-data-files="%MEDIAPIPE_DLL%=mediapipe/tasks/c/libmediapipe.dll" ^
   --include-package=DaO ^
   --assume-yes-for-downloads ^
@@ -27,6 +29,9 @@ if %ERRORLEVEL% NEQ 0 (
     echo === BUILD FAILED ===
     exit /b 1
 )
+
+if exist "%PROJECT_DIR%dist\main.build" move /y "%PROJECT_DIR%dist\main.build" "%PROJECT_DIR%dist\EgoDaO.build" >nul
+if exist "%PROJECT_DIR%dist\main.dist" move /y "%PROJECT_DIR%dist\main.dist" "%PROJECT_DIR%dist\EgoDaO.dist" >nul
 
 echo.
 echo === Copying config.json ===

@@ -1,2 +1,3 @@
-# Ego Daq-O V0.2.3.1 — Ego 数据采集与实时处理系统
-__version__ = "0.2.1"
+from DaO.config import APP_VERSION
+
+__version__ = APP_VERSION

@@ -6,14 +6,14 @@ import threading
 from pathlib import Path
 
 import numpy as np
-from PySide6.QtCore import Qt, QTimer, Slot
+from PySide6.QtCore import Qt, QTimer, Signal, Slot
 from PySide6.QtGui import QIcon
 from PySide6.QtWidgets import (
     QHBoxLayout, QLabel, QMainWindow, QMessageBox, QPushButton,
     QSplitter, QStatusBar, QToolBar, QWidget,
 )
 
-from DaO.config import AppConfig
+from DaO.config import APP_NAME, APP_VERSION, AppConfig
 from DaO.core.capture_worker import CaptureWorker
 from DaO.core.humanego_recorder import HumanEgoRecorder
 from DaO.core.recorder import DataRecorder
@@ -40,6 +40,8 @@ QFrame#cameraPane { border: 1px solid #333; background: #111; }
 
 
 class MainWindow(QMainWindow):
+    conversion_finished = Signal(bool, str)
+
     def __init__(self, config: AppConfig | None = None):
         super().__init__()
         self._cfg = config or AppConfig()
@@ -52,11 +54,13 @@ class MainWindow(QMainWindow):
         self._hand_counts = {"left": 0, "right": 0}
         self._setup_ui()
         self._setup_status_timer()
+        self.conversion_finished.connect(self._on_conversion_finished)
 
     # ── UI construction ────────────────────────────────────────────
 
     def _setup_ui(self):
-        self.setWindowTitle("Ego Daq-O V0.2.3.1 — Ego 数据采集与实时处理系统")
+        self.setWindowTitle(
+            f"{APP_NAME} V{APP_VERSION} — Ego 数据采集与实时处理系统")
         self.setMinimumSize(1280, 800)
         self.setStyleSheet(STYLESHEET)
 
@@ -164,7 +168,7 @@ class MainWindow(QMainWindow):
         self._label_device.setText("正在连接设备...")
 
     def _stop_capture(self):
-        if self._recorder and self._recorder.is_recording:
+        if self._is_recording():
             self._stop_recording()
         if self._capture:
             self._capture.stop()
@@ -179,24 +183,38 @@ class MainWindow(QMainWindow):
     # ── recording ──────────────────────────────────────────────────
 
     def _toggle_recording(self):
-        if self._recorder and self._recorder.is_recording:
+        if not self._capture or not self._capture.is_running:
+            return
+        if self._is_recording():
             self._stop_recording()
         else:
             self._start_recording()
 
+    def _is_recording(self) -> bool:
+        return bool(
+            (self._recorder and self._recorder.is_recording)
+            or (self._he_recorder and self._he_recorder.is_recording)
+        )
+
     def _start_recording(self):
+        if not (self._cfg.recording.enable_raw
+                or self._cfg.recording.enable_humanego):
+            self._sb_status.setText("录制格式均未启用")
+            return
         if self._cfg.recording.enable_raw:
             self._recorder = DataRecorder(self._cfg)
-            d = self._recorder.start()
+            self._recorder.start()
         if self._cfg.recording.enable_humanego:
             self._he_recorder = HumanEgoRecorder(self._cfg)
             self._he_recorder.start()
+            if self._recorder and self._recorder._session_dir:
+                self._he_recorder.set_mp4_source(str(
+                    self._recorder._session_dir / "center_cam.mp4"))
         if self._capture:
             self._capture._he_recording_active = bool(
                 self._cfg.recording.enable_humanego)
         self._btn_record.setText("停止录制")
-        d = self._recorder._session_dir if self._recorder else Path(".")
-        self._sb_status.setText(f"录制中")
+        self._sb_status.setText("录制中")
 
     def _stop_recording(self):
         center_mp4 = None
@@ -233,16 +251,19 @@ class MainWindow(QMainWindow):
                 from DaO.core.converter import convert_session
                 convert_session(Path(folder), self._cfg.recording.data_root,
                                 self._cfg.recording.humanego_subdir)
-                self._sb_status.setText("转换完成")
+                self.conversion_finished.emit(True, "转换完成")
             except Exception as e:
-                self._sb_status.setText(f"转换失败: {e}")
                 import logging
                 logging.getLogger("egodao").exception("Conversion failed")
-            finally:
-                self._btn_convert.setEnabled(True)
+                self.conversion_finished.emit(False, f"转换失败: {e}")
 
         t = threading.Thread(target=_run_convert, daemon=True)
         t.start()
+
+    @Slot(bool, str)
+    def _on_conversion_finished(self, _success: bool, message: str):
+        self._sb_status.setText(message)
+        self._btn_convert.setEnabled(True)
 
 
     # ── signal handlers ────────────────────────────────────────────
@@ -254,7 +275,7 @@ class MainWindow(QMainWindow):
         if self._recorder and self._recorder.is_recording:
             self._recorder.write_frame(role, bgr)
         if self._he_recorder and self._he_recorder.is_recording and role == "center":
-            self._he_recorder.write_frame_rgb(bgr, self._frame_count)
+            self._he_recorder.write_frame_rgb(bgr)
 
     @Slot(str, list)
     def _on_hands_humanego(self, role: str, humanego_hands: list):
@@ -304,6 +325,10 @@ class MainWindow(QMainWindow):
 
     @Slot()
     def _on_pipeline_stopped(self):
+        if self._is_recording():
+            self._stop_recording()
+        self._btn_record.setEnabled(False)
+        self._btn_capture.setText("采集")
         self._sb_status.setText("已停止")
         self._label_device.setText("设备已断开")
 

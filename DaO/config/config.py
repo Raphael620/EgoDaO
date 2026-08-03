@@ -2,6 +2,9 @@ import os
 from dataclasses import dataclass, field
 from pathlib import Path
 
+APP_NAME = "Ego Daq-O"
+APP_VERSION = "0.3.0"
+
 
 @dataclass
 class CameraConfig:
